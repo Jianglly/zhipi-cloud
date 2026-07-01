@@ -132,7 +132,7 @@ def main():
     step(4, 6, "Initializing Database...")
 
     # Read DB credentials from .env
-    db_cfg = {"host": "localhost", "port": 3306, "user": "root", "password": "", "db": "zhipi_cloud"}
+    db_cfg = {"host": "localhost", "port": 3307, "user": "root", "password": "", "db": "zhipi_cloud"}
     env_path = os.path.join(BACKEND_DIR, ".env")
     if not os.path.exists(env_path):
         env_example = os.path.join(BACKEND_DIR, ".env.example")

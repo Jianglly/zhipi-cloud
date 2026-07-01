@@ -14,7 +14,7 @@ ENV_FILE = os.path.join(PROJECT_ROOT, "zhipi-cloud", "zhipi-backend", ".env")
 # ── 读取配置 ──────────────────────────────────────────
 def load_env():
     """从 .env 文件读取数据库配置"""
-    config = {"host": "localhost", "port": 3306, "user": "root", "password": "", "db": "zhipi_cloud"}
+    config = {"host": "localhost", "port": 3307, "user": "root", "password": "", "db": "zhipi_cloud"}
     if os.path.exists(ENV_FILE):
         with open(ENV_FILE, "r", encoding="utf-8") as f:
             for line in f:
