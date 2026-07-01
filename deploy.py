@@ -206,11 +206,16 @@ def main():
     if not os.path.exists(CF_EXE):
         die("cloudflared.exe not found! Re-run setup or download manually.")
 
-    # Check if tunnel credentials file exists
+    # Check if tunnel credentials file exists (UUID-named, not tunnel name)
     cred_dir = os.path.expanduser("~/.cloudflared")
-    cred_file = os.path.join(cred_dir, f"{TUNNEL_NAME}.json")
+    cred_file = None
+    if os.path.isdir(cred_dir):
+        for f in os.listdir(cred_dir):
+            if f.endswith(".json") and f != "cert.pem":
+                cred_file = os.path.join(cred_dir, f)
+                break
 
-    if not os.path.exists(cred_file):
+    if not cred_file:
         print()
         print(f"      {c('yellow', 'First-time setup needed!')}")
         print(f"      Please follow the ONE-TIME steps below:")
