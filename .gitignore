@@ -1,0 +1,55 @@
+# ========================
+# ZhiPi Cloud .gitignore
+# ========================
+
+# --- Secrets & Environment ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# --- Node / Frontend ---
+node_modules/
+zhipi-cloud/zhipi-frontend/dist/
+zhipi-cloud/zhipi-backend/frontend_dist/
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# --- WorkBuddy (AI assistant memory) ---
+.workbuddy/
+
+# --- Binary Tools ---
+natapp.exe
+*.exe
+
+# --- Temporary / Logs ---
+*.log
+*.tmp
+
+# --- Uploaded Files (user data, not code) ---
+zhipi-cloud/zhipi-backend/static/uploads/
