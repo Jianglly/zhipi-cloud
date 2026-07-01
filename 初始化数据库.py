@@ -36,6 +36,48 @@ def load_env():
     return config
 
 
+def find_mysql():
+    """Auto-detect MySQL installation path."""
+    paths = [
+        r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe",
+        r"C:\Program Files\MySQL\MySQL Server 5.7\bin\mysql.exe",
+        r"C:\Program Files (x86)\MySQL\MySQL Server 8.0\bin\mysql.exe",
+        r"D:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe",
+        r"C:\xampp\mysql\bin\mysql.exe",
+        r"D:\xampp\mysql\bin\mysql.exe",
+    ]
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    # Try PATH
+    import subprocess
+    try:
+        result = subprocess.run("where mysql", shell=True, capture_output=True, text=True)
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line.endswith("mysql.exe") and os.path.exists(line):
+                    return line
+    except Exception:
+        pass
+    return None
+
+
+def test_mysql_connection(cfg, password):
+    """Test if MySQL is running and accessible."""
+    import pymysql
+    try:
+        conn = pymysql.connect(
+            host=cfg["host"], port=cfg["port"],
+            user=cfg["user"], password=password,
+            charset="utf8mb4"
+        )
+        conn.close()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def check_mysql():
     """检查 pymysql 是否可用"""
     try:
@@ -127,6 +169,16 @@ def main():
     print("=" * 55)
     print()
 
+    # Check MySQL installation
+    mysql_path = find_mysql()
+    if mysql_path:
+        print(f"  [OK] MySQL found: {mysql_path}")
+    else:
+        print("  [WARN] MySQL not found in common paths!")
+        print("         请确保 MySQL 8.0+ 已安装并加入 PATH")
+        print("         下载: https://dev.mysql.com/downloads/mysql/")
+        print()
+
     cfg = load_env()
 
     # 显示配置
@@ -146,9 +198,22 @@ def main():
     # 检查 pymysql
     if not check_mysql():
         if not install_pymysql():
-            print("\n  [FAIL] Cannot install pymysql. Run: pip install pymysql")
+            print("\n  [FAIL] Cannot install pymysql.")
+            print("  Run manually: pip install pymysql")
             input("\n  Press Enter to exit...")
             return
+
+    # Test MySQL connection
+    ok, err = test_mysql_connection(cfg, password)
+    if not ok:
+        print(f"  [FAIL] Cannot connect to MySQL: {err}")
+        print("\n  请确认:")
+        print("   1. MySQL 服务已启动 (Win+R → services.msc → MySQL80)")
+        print("   2. 主机/端口/密码正确")
+        print("   3. 如首次安装，可能需要先设置 root 密码")
+        input("\n  Press Enter to exit...")
+        return
+    print("  [OK] MySQL connection successful\n")
 
     sql_files = [
         ("01_create_tables.sql", "Creating tables"),
