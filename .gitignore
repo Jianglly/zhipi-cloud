@@ -50,6 +50,7 @@ natapp.exe
 # --- Temporary / Logs ---
 *.log
 *.tmp
+nul
 
 # --- Uploaded Files (user data, not code) ---
 zhipi-cloud/zhipi-backend/static/uploads/

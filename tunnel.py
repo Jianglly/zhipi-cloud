@@ -4,7 +4,7 @@ ZhiPi Cloud - 内网穿透启动器（单端口版）
 使用 natapp 将 8000 端口暴露到公网，任何人都能访问
 
 使用前提：
-  1. 先用"启动智批云.bat"选[2]网络共享模式，让前端和后端都在8000端口
+  1. Run start.bat and choose [2] Network Share mode first
   2. 去 https://natapp.cn 注册账号
   3. 创建 1 条免费隧道：本地端口 8000
   4. 下载 natapp.exe 放到本脚本同目录
