@@ -1,0 +1,74 @@
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files (包含敏感信息)
+.env
+.env.local
+.env.*.local
+
+# ==================== Node.js ====================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# ==================== IDE & Editor ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ==================== Project Specific ====================
+# 前端构建产物（由 Vite 生成）
+zhipi-frontend/dist/
+
+# 前端托管到后端的目录
+zhipi-backend/frontend_dist/
+
+# 上传文件目录
+zhipi-backend/static/uploads/
+
+# 临时文件
+*.tmp
+*.bak
+
+# 日志文件
+*.log
+logs/
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# ==================== Tunnel / Proxy ====================
+natapp.exe
+cloudflared.exe
+*.pid
+
+# ==================== OS Files ====================
+Desktop.ini
+$RECYCLE.BIN/

@@ -119,6 +119,8 @@ CREATE TABLE IF NOT EXISTS score (
     KEY idx_exam_date_subject (exam_date, subject),
     KEY idx_class_subject_score (class_id, subject, score),
     KEY idx_student (student_id),
+    KEY idx_status (status),
+    KEY idx_status_class (status, class_id),
     CONSTRAINT fk_score_student FOREIGN KEY (student_id) REFERENCES student (student_id),
     CONSTRAINT fk_score_paper FOREIGN KEY (paper_id) REFERENCES paper (paper_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='成绩记录表';
@@ -145,9 +147,12 @@ CREATE TABLE IF NOT EXISTS operation_log (
 
 
 -- =====================================================
+-- =====================================================
 -- 索引设计说明（对应物理设计文档）
 -- =====================================================
 -- Score(exam_date, subject): 支持按考试日期+科目筛选成绩，用于生成班级排名
 -- Score(class_id, subject, score): 班级单科成绩排序，避免回表（覆盖索引）
+-- Score(status): 待批阅列表查询加速
+-- Score(status, class_id): 按班级查询待批阅记录
 -- Teacher(class_id): 查询某班级的任课教师
 -- 已在表定义中包含上述索引

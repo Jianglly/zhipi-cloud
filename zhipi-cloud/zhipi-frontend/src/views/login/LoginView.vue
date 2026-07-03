@@ -25,18 +25,24 @@
         >
           👨‍🎓 学生登录
         </button>
+        <button
+          :class="['role-tab', role === 'admin' ? 'active' : '']"
+          @click="role = 'admin'"
+        >
+          🔧 管理员
+        </button>
       </div>
 
       <!-- 登录表单 -->
       <form @submit.prevent="handleLogin" class="login-form">
         <div class="form-group">
           <label class="form-label">
-            {{ role === 'teacher' ? '教师编号' : '学号' }}
+            {{ role === 'teacher' ? '教师编号' : role === 'student' ? '学号' : '管理员账号' }}
           </label>
           <input
             v-model="userId"
             class="form-input"
-            :placeholder="role === 'teacher' ? '请输入教师编号（如 T001）' : '请输入学号（如 2414100311）'"
+            :placeholder="role === 'teacher' ? '请输入教师编号（如 T001）' : role === 'student' ? '请输入学号（如 2414100311）' : '请输入管理员账号'"
             required
             autocomplete="username"
           />
@@ -66,6 +72,12 @@
         <p>🔑 演示账号</p>
         <p>教师：T007 / 123456</p>
         <p>学生：S032 / 123456</p>
+        <p>管理员：admin / 123456</p>
+      </div>
+
+      <!-- 注册入口 -->
+      <div class="register-link">
+        还没有账号？<router-link to="/register">立即注册</router-link>
       </div>
     </div>
   </div>
@@ -74,9 +86,10 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { authApi } from '@/api'
+import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
+const userStore = useUserStore()
 const role = ref('teacher')
 const userId = ref('')
 const password = ref('')
@@ -91,17 +104,10 @@ const handleLogin = async () => {
   loading.value = true
   errorMsg.value = ''
   try {
-    const res = await authApi.login(userId.value, password.value, role.value)
-    // 存储 token 和用户信息
-    localStorage.setItem('token', res.access_token)
-    localStorage.setItem('user', JSON.stringify({
-      user_id: res.user_id,
-      name: res.name,
-      role: res.role,
-      class_id: res.class_id,
-    }))
-    // 跳转到对应首页
-    router.push(res.role === 'teacher' ? '/teacher/dashboard' : '/student/dashboard')
+    await userStore.login(userId.value, password.value, role.value)
+    if (userStore.isAdmin) router.push('/admin/dashboard')
+    else if (userStore.isTeacher) router.push('/teacher/dashboard')
+    else router.push('/student/dashboard')
   } catch (err) {
     errorMsg.value = err.message || '登录失败，请检查账号密码'
   } finally {
@@ -204,5 +210,19 @@ const handleLogin = async () => {
 .demo-hint p:first-child {
   font-weight: 600;
   color: #4f46e5;
+}
+.register-link {
+  margin-top: 16px;
+  text-align: center;
+  font-size: 14px;
+  color: #64748b;
+}
+.register-link a {
+  color: #4f46e5;
+  font-weight: 600;
+  text-decoration: none;
+}
+.register-link a:hover {
+  text-decoration: underline;
 }
 </style>

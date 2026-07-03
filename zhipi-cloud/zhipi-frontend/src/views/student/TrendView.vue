@@ -25,7 +25,9 @@
     <!-- 趋势折线图 -->
     <div class="card chart-card">
       <h3 class="card-title">成绩趋势折线图 · {{ filterSubject }}</h3>
-      <div v-if="loading" class="loading">加载中...</div>
+      <div v-if="loading" class="skeleton-block skeleton-chart">
+        <SkeletonLoader variant="block" height="280px" />
+      </div>
       <div v-else-if="trendData.length === 0" class="empty-state">
         <div class="icon">📈</div>
         <p>暂无该科目的考试趋势数据</p>
@@ -79,6 +81,7 @@
 import { ref, onMounted, nextTick, watch } from 'vue'
 import { statsApi } from '@/api'
 import { ALL_SUBJECTS, DEFAULT_SUBJECT } from '@/constants'
+import SkeletonLoader from '@/components/SkeletonLoader.vue'
 
 const subjects = ALL_SUBJECTS
 const filterSubject = ref(DEFAULT_SUBJECT)

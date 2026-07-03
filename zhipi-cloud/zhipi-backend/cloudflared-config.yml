@@ -1,0 +1,14 @@
+# ZhiPi Cloud - Cloudflare Tunnel configuration
+# Domain: zhipicloud.top
+# Maps zhipicloud.top -> localhost:8000
+
+# 禁用QUIC协议（学校网络封UDP），强制使用HTTP/2
+protocol: http2
+
+ingress:
+  - hostname: zhipicloud.top
+    service: http://localhost:8000
+  - hostname: www.zhipicloud.top
+    service: http://localhost:8000
+  # Catch-all: return 404 for other subdomains
+  - service: http_status:404

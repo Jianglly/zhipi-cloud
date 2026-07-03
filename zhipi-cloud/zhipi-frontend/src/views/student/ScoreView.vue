@@ -17,7 +17,9 @@
     </div>
 
     <div class="card">
-      <div v-if="loading" class="loading">加载中...</div>
+      <div v-if="loading" class="skeleton-table-body">
+        <SkeletonLoader v-for="i in 5" :key="i" variant="table-row" />
+      </div>
       <div v-else-if="scores.length === 0" class="empty-state">
         <div class="icon">📋</div>
         <p>暂无成绩记录</p>
@@ -77,6 +79,7 @@
 import { ref, onMounted } from 'vue'
 import { statsApi } from '@/api'
 import { ALL_SUBJECTS } from '@/constants'
+import SkeletonLoader from '@/components/SkeletonLoader.vue'
 
 const scores = ref([])
 const loading = ref(false)

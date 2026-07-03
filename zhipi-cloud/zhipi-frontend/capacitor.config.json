@@ -1,0 +1,13 @@
+{
+  "appId": "com.zhipi.cloud",
+  "appName": "智批云",
+  "webDir": "../zhipi-backend/frontend_dist",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true,
+    "allowNavigation": []
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

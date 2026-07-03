@@ -2,51 +2,21 @@
 试卷管理控制器 - 教师管理试卷、查看待批阅列表
 智批云后端 - controllers/paper_controller.py
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from typing import List, Optional
-from pydantic import BaseModel
-from datetime import date
-from typing import Any, Dict
+from typing import Optional
 
 from config.database import get_db
-from models import Score, Paper, Student
-from controllers.auth_controller import require_teacher, require_student, get_current_user, UserInfo
+from models import Score, Paper, Student, ClassInfo
+from controllers.auth_controller import require_teacher, get_current_user
+from schemas import PaperCreate, PaperUpdate, UserInfo
 
 router = APIRouter(prefix="/api/papers", tags=["试卷管理"])
 
 
-# ===================== Pydantic 数据模型 =====================
+# ===================== 试卷列表 / 创建 =====================
 
-class PaperCreate(BaseModel):
-    title: str
-    subject: str
-    class_id: str
-    total_score: float = 150.0
-    exam_date: date
-    answer_key: Optional[Dict[str, Any]] = None
-    description: Optional[str] = None
-
-
-class PaperResponse(BaseModel):
-    paper_id: int
-    title: str
-    subject: str
-    class_id: str
-    teacher_id: str
-    total_score: float
-    exam_date: date
-    status: int
-    description: Optional[str]
-
-    class Config:
-        from_attributes = True
-
-
-# ===================== 试卷路由 =====================
-
-@router.get("/", summary="获取试卷列表")
+@router.get("", summary="获取试卷列表")
 def get_papers(
     class_id: Optional[str] = Query(None),
     subject: Optional[str] = Query(None),
@@ -74,23 +44,28 @@ def get_papers(
 
     papers = query.order_by(Paper.exam_date.desc()).all()
 
+    # 预加载班级名称
+    class_map = {c.class_id: c.class_name for c in db.query(ClassInfo).all()}
+
     return [
         {
             "paper_id": p.paper_id,
             "title": p.title,
             "subject": p.subject,
             "class_id": p.class_id,
+            "class_name": class_map.get(p.class_id, p.class_id),
             "teacher_id": p.teacher_id,
             "total_score": float(p.total_score),
             "exam_date": p.exam_date,
             "status": p.status,
             "status_text": ["草稿", "已发布", "批阅中", "已完成"][p.status],
+            "has_answer_key": bool(p.answer_key),
         }
         for p in papers
     ]
 
 
-@router.post("/", summary="教师：创建试卷")
+@router.post("", summary="教师：创建试卷")
 def create_paper(
     data: PaperCreate,
     current_user: UserInfo = Depends(require_teacher),
@@ -109,9 +84,29 @@ def create_paper(
         status=1,  # 直接发布
     )
     db.add(paper)
-    db.commit()
+    db.flush()  # 获取 paper_id 但不提交（由 get_db() 依赖注入自动提交）
     db.refresh(paper)
     return {"message": "试卷创建成功", "paper_id": paper.paper_id}
+
+
+# ===================== 命名路由（必须在 /{paper_id} 之前） =====================
+
+@router.get("/classes", summary="获取班级列表")
+def get_classes(
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """获取所有班级列表（用于创建试卷时选择适用班级）"""
+    classes = db.query(ClassInfo).order_by(ClassInfo.class_id).all()
+    return [
+        {
+            "class_id": c.class_id,
+            "class_name": c.class_name,
+            "grade": c.grade,
+            "department": c.department,
+        }
+        for c in classes
+    ]
 
 
 @router.get("/pending", summary="教师：获取待批阅列表")
@@ -122,7 +117,7 @@ def get_pending_scores(
 ):
     """教师查看待批阅的答卷列表（含安全恢复：状态异常但未完成批阅的记录也会显示）"""
     from sqlalchemy import or_, and_
-    
+
     target_class = class_id or current_user.class_id
     results = db.query(Score, Paper)\
         .join(Paper, Score.paper_id == Paper.paper_id)\
@@ -145,10 +140,64 @@ def get_pending_scores(
             "paper_title": p.title,
             "exam_date": s.exam_date,
             "status": s.status,
-            "status_text": (["待批阅", "AI批阅中", "待人工审核", "已完成"][s.status] 
+            "status_text": (["待批阅", "AI批阅中", "待人工审核", "已完成"][s.status]
                            if s.status != 3 else "已完成（待审核）"),
             "ai_score": float(s.ai_score) if s.ai_score else None,
             "answer_image": s.answer_image,
+            "has_answer_key": bool(p.answer_key),
+        }
+        for s, p in results
+    ]
+
+
+@router.get("/completed", summary="教师：获取已批阅列表")
+def get_completed_scores(
+    class_id: Optional[str] = Query(None),
+    current_user: UserInfo = Depends(require_teacher),
+    db: Session = Depends(get_db)
+):
+    """教师查看已批阅的答卷列表（status=3 且 manual_score 不为空）"""
+    from sqlalchemy import or_
+
+    target_class = class_id or current_user.class_id
+
+    # 如果无法确定班级，尝试从该教师创建的试卷中推断
+    if not target_class:
+        teacher_papers = db.query(Paper).filter(Paper.teacher_id == current_user.user_id).all()
+        if teacher_papers:
+            target_class = [p.class_id for p in teacher_papers]
+        else:
+            return []
+
+    query = db.query(Score, Paper)\
+        .join(Paper, Score.paper_id == Paper.paper_id)
+
+    if isinstance(target_class, list):
+        query = query.filter(Score.class_id.in_(target_class))
+    else:
+        query = query.filter(Score.class_id == target_class)
+
+    results = query\
+        .filter(Score.status == 3)\
+        .filter(Score.manual_score != None)\
+        .order_by(Score.updated_at.desc()).all()
+
+    return [
+        {
+            "score_id": s.score_id,
+            "paper_id": s.paper_id,
+            "student_id": s.student_id,
+            "name": s.name,
+            "subject": s.subject,
+            "paper_title": p.title,
+            "exam_date": s.exam_date,
+            "status": s.status,
+            "status_text": "已完成",
+            "ai_score": float(s.ai_score) if s.ai_score else None,
+            "manual_score": float(s.manual_score) if s.manual_score else None,
+            "total_score": float(s.score) if s.score else None,
+            "answer_image": s.answer_image,
+            "rank_in_class": s.rank_in_class,
         }
         for s, p in results
     ]
@@ -196,7 +245,7 @@ def submit_score(
         )
         score_record.status = 3
 
-    db.commit()
+    db.flush()
 
     # 重新计算班级排名
     _recalculate_rankings(db, paper_id)
@@ -216,16 +265,15 @@ def recover_score(
         Score.paper_id == paper_id,
         Score.student_id == student_id
     ).first()
-    
+
     if not score_record:
         raise HTTPException(status_code=404, detail="成绩记录不存在")
-    
+
     # 只恢复状态，保留已保存的分数数据
     score_record.status = 2
     score_record.manual_score = None
     score_record.score = 0.00
-    db.commit()
-    
+
     return {
         "message": "成绩已恢复到待审核状态",
         "paper_id": paper_id,
@@ -234,6 +282,131 @@ def recover_score(
         "status_text": "待人工审核"
     }
 
+
+# ===================== 试卷详情 / 更新 / 删除（放在命名路由之后避免路由冲突） =====================
+
+@router.get("/{paper_id}", summary="获取试卷详情（含标准答案）")
+def get_paper_detail(
+    paper_id: int,
+    current_user: UserInfo = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """获取单个试卷详情，包含 answer_key"""
+    paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="试卷不存在")
+
+    answer_key = paper.answer_key
+    if answer_key and not isinstance(answer_key, dict):
+        import json
+        answer_key = json.loads(answer_key)
+
+    # 统计题目信息
+    has_subjective = False
+    objective_count = 0
+    subjective_count = 0
+    if answer_key:
+        for v in answer_key.values():
+            if isinstance(v, dict) and v.get("type") == "subjective":
+                has_subjective = True
+                subjective_count += 1
+            else:
+                objective_count += 1
+
+    class_info = db.query(ClassInfo).filter(ClassInfo.class_id == paper.class_id).first()
+
+    return {
+        "paper_id": paper.paper_id,
+        "title": paper.title,
+        "subject": paper.subject,
+        "class_id": paper.class_id,
+        "class_name": class_info.class_name if class_info else paper.class_id,
+        "teacher_id": paper.teacher_id,
+        "total_score": float(paper.total_score),
+        "exam_date": paper.exam_date,
+        "status": paper.status,
+        "status_text": ["草稿", "已发布", "批阅中", "已完成"][paper.status],
+        "answer_key": answer_key,
+        "description": paper.description,
+        "has_answer_key": bool(answer_key),
+        "has_subjective": has_subjective,
+        "objective_count": objective_count,
+        "subjective_count": subjective_count,
+        "total_questions": objective_count + subjective_count,
+    }
+
+
+@router.put("/{paper_id}", summary="教师：更新试卷（含录入标准答案）")
+def update_paper(
+    paper_id: int,
+    data: PaperUpdate,
+    current_user: UserInfo = Depends(require_teacher),
+    db: Session = Depends(get_db)
+):
+    """教师更新试卷信息，可用于录入/修改标准答案"""
+    paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="试卷不存在")
+
+    # 只有出卷教师本人可以修改
+    if paper.teacher_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="只能修改自己创建的试卷")
+
+    updated_fields = []
+    if data.title is not None:
+        paper.title = data.title
+        updated_fields.append("title")
+    if data.total_score is not None:
+        paper.total_score = data.total_score
+        updated_fields.append("total_score")
+    if data.exam_date is not None:
+        paper.exam_date = data.exam_date
+        updated_fields.append("exam_date")
+    if data.answer_key is not None:
+        paper.answer_key = data.answer_key
+        updated_fields.append("answer_key")
+    if data.description is not None:
+        paper.description = data.description
+        updated_fields.append("description")
+
+    if not updated_fields:
+        raise HTTPException(status_code=400, detail="没有需要更新的字段")
+
+    db.flush()
+    return {"message": "试卷更新成功", "updated_fields": updated_fields}
+
+
+@router.delete("/{paper_id}", summary="教师：删除试卷")
+def delete_paper(
+    paper_id: int,
+    current_user: UserInfo = Depends(require_teacher),
+    db: Session = Depends(get_db)
+):
+    """教师删除试卷（同时删除关联的成绩记录）"""
+    paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="试卷不存在")
+
+    # 只有出卷教师本人可以删除
+    if paper.teacher_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="只能删除自己创建的试卷")
+
+    # 删除关联的成绩记录
+    score_count = db.query(Score).filter(Score.paper_id == paper_id).count()
+    db.query(Score).filter(Score.paper_id == paper_id).delete(synchronize_session=False)
+
+    # 删除试卷
+    db.delete(paper)
+    db.flush()
+
+    return {
+        "message": "试卷删除成功",
+        "paper_id": paper_id,
+        "deleted_scores": score_count,
+    }
+
+
+# ===================== 工具函数 =====================
 
 def _recalculate_rankings(db: Session, paper_id: int):
     """重新计算某张试卷的班级排名"""
@@ -244,5 +417,3 @@ def _recalculate_rankings(db: Session, paper_id: int):
 
     for i, s in enumerate(scores, 1):
         s.rank_in_class = i
-
-    db.commit()

@@ -51,7 +51,9 @@
             <option v-for="s in allSubjects" :key="s" :value="s">{{ s }}</option>
           </select>
         </div>
-        <div v-if="loadingOverview" class="loading">加载中...</div>
+        <div v-if="loadingOverview" class="skeleton-table-body" style="padding: 0">
+          <SkeletonLoader v-for="i in 5" :key="i" variant="table-row" />
+        </div>
         <div v-else-if="classOverview.length === 0" class="empty-state">
           <div class="icon">📊</div>
           <p>暂无考试数据</p>
@@ -119,9 +121,11 @@
 import { ref, onMounted, computed } from 'vue'
 import { statsApi } from '@/api'
 import { ALL_SUBJECTS } from '@/constants'
+import { useUserStore } from '@/stores/user'
+import SkeletonLoader from '@/components/SkeletonLoader.vue'
 
-const user = JSON.parse(localStorage.getItem('user') || '{}')
-const userName = computed(() => user.name || '老师')
+const userStore = useUserStore()
+const userName = computed(() => userStore.user?.name || '老师')
 const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })
 
 const overview = ref({ total_papers: 0, completed_scores: 0, pending_scores: 0, total_students: 0 })

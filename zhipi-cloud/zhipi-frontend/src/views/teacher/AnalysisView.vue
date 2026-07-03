@@ -75,7 +75,9 @@
     <!-- 成绩排名表格 -->
     <div class="card ranking-card">
       <h3 class="card-title">成绩排名</h3>
-      <div v-if="loading" class="loading">加载中...</div>
+      <div v-if="loading" class="skeleton-table-body">
+        <SkeletonLoader v-for="i in 5" :key="i" variant="table-row" />
+      </div>
       <div v-else-if="rankingData.length === 0" class="empty-state">
         <div class="icon">🏆</div>
         <p>暂无排名数据，请先查询</p>
@@ -121,6 +123,7 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { statsApi } from '@/api'
 import { ALL_SUBJECTS, DEFAULT_SUBJECT } from '@/constants'
+import SkeletonLoader from '@/components/SkeletonLoader.vue'
 
 const filter = ref({ subject: DEFAULT_SUBJECT, exam_date: '' })
 const rankingData = ref([])

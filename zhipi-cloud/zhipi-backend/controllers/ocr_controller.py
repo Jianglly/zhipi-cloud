@@ -2,21 +2,30 @@
 OCR 批阅控制器 - 接入百度OCR API
 智批云后端 - controllers/ocr_controller.py
 """
+import sys
 import os
 import json
 import time
 import base64
 import requests
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from typing import Tuple, List, Dict
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from typing import List, Optional, Dict, Tuple
+
+# 获取当前文件的上一级目录（即 zhipi-backend 根目录），并加入系统搜索路径
+root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if root_path not in sys.path:
+    sys.path.insert(0, root_path)
 
 from config.database import get_db
 from config.settings import settings
+from config.rate_limit import limiter
 from models import Score, Paper
-from controllers.auth_controller import require_teacher, get_current_user, UserInfo
+from controllers.auth_controller import require_teacher, UserInfo
+from services.ocr_service import parse_ocr_text_to_answers, auto_grade_answers
+from services.llm_service import grade_mixed_answers
 
 router = APIRouter(prefix="/api/ocr", tags=["OCR批阅"])
 
@@ -81,12 +90,15 @@ def get_baidu_access_token() -> str:
 
 def call_baidu_ocr(image_path: str) -> Tuple[str, List[Dict]]:
     """
-    调用百度OCR通用文字识别API
+    调用百度OCR手写体识别API（对手写答案准确率远高于通用印刷体）
     返回：(完整文本, 词级识别结果列表)
     
     词级结果每项: {"words": "A", "location": {"top": 100, "left": 200, "width": 30, "height": 40}}
     """
     access_token = get_baidu_access_token()
+    
+    # 手写体识别 API（专门针对手写答案优化）
+    ocr_url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/handwriting?access_token={access_token}"
     
     # 读取图片并base64编码
     with open(image_path, "rb") as f:
@@ -94,8 +106,59 @@ def call_baidu_ocr(image_path: str) -> Tuple[str, List[Dict]]:
     
     img_base64 = base64.b64encode(img_data).decode("utf-8")
     
-    # 百度OCR通用文字识别API（标准版）
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    data = {
+        "image": img_base64,
+        "recognize_granularity": "big",
+    }
+    
+    try:
+        resp = requests.post(ocr_url, headers=headers, data=data, timeout=30)
+        resp.raise_for_status()
+        result = resp.json()
+        
+        if "error_code" in result:
+            # 如果手写体识别失败（如图片质量太差），降级到通用OCR
+            print(f"[OCR] 手写体识别失败，降级到通用OCR: {result.get('error_msg', result['error_code'])}")
+            return call_baidu_ocr_general(image_path)
+        
+        words_result = result.get("words_result", [])
+        # 手写体API返回格式略有不同，需要拼接完整文本
+        full_text = "\n".join([item["words"] for item in words_result])
+        
+        # 手写体API不返回词级位置信息，构造空列表
+        # 如果返回了位置信息则使用
+        words_with_location = []
+        for item in words_result:
+            loc = item.get("location")
+            if loc:
+                words_with_location.append({"words": item["words"], "location": loc})
+            else:
+                words_with_location.append({"words": item["words"], "location": {"top": 0, "left": 0, "width": 0, "height": 0}})
+        
+        return full_text, words_with_location
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 降级到通用OCR
+        print(f"[OCR] 手写体识别异常，降级到通用OCR: {str(e)}")
+        return call_baidu_ocr_general(image_path)
+
+
+def call_baidu_ocr_general(image_path: str) -> Tuple[str, List[Dict]]:
+    """
+    降级方案：百度OCR通用文字识别API（印刷体/通用场景）
+    当手写体识别失败时使用
+    """
+    access_token = get_baidu_access_token()
+    
     ocr_url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic?access_token={access_token}"
+    
+    with open(image_path, "rb") as f:
+        img_data = f.read()
+    
+    img_base64 = base64.b64encode(img_data).decode("utf-8")
     
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
@@ -124,210 +187,12 @@ def call_baidu_ocr(image_path: str) -> Tuple[str, List[Dict]]:
         raise HTTPException(status_code=500, detail=f"调用百度OCR API失败: {str(e)}")
 
 
-def parse_ocr_text_to_answers(ocr_text: str, answer_key: Dict, words_result: List[Dict] = None) -> Dict:
-    """
-    将OCR识别的文本解析为结构化答案。
-    
-    针对手写选择题答卷优化，支持三种模式：
-    
-    模式A — 结构化答卷（如 "1. A / 2. D"）：
-      按题号+空格/标点+字母的正则匹配提取
-    
-    模式B — 纯字母列表（如 "A D D C"）：
-      检测到连续字母时按顺序分配给各题
-    
-    模式C — 位置排序兜底：
-      利用OCR返回的词坐标，从上到下从左到右排序，
-      筛选出单个A-D字母，按题号顺序分配
-    """
-    import re
-    
-    result = {}
-    if not answer_key:
-        return result
-    
-    question_count = len(answer_key)
-    
-    # 构建有序题号列表
-    q_items = []
-    for q_key in answer_key.keys():
-        q_num = q_key.replace("q", "").replace("Q", "")
-        try:
-            q_items.append((int(q_num), q_key))
-        except ValueError:
-            q_items.append((9999, q_key))
-    q_items.sort()
-    ordered_keys = [k for _, k in q_items]
-    
-    lines = [line.strip() for line in ocr_text.strip().split("\n") if line.strip()]
-    
-    # ========== 模式A：结构化匹配 — 找 "题号 + 字母" ==========
-    found_structured = 0
-    ocr_upper = ocr_text.upper()
-    for idx, q_key in enumerate(ordered_keys):
-        q_num = str(idx + 1)
-        student_ans = ""
-        
-        # 多种题号格式
-        patterns_a = [
-            rf"(?<!\d){q_num}\s*[.、,:：)\]]\s*([A-D])(?!\s*[a-z])",
-            rf"第\s*{q_num}\s*题\s*[:：]?\s*([A-D])",
-            rf"\(\s*{q_num}\s*\)\s*([A-D])",
-            rf"(?<!\d){q_num}\s+([A-D])\b",
-        ]
-        for pat in patterns_a:
-            m = re.search(pat, ocr_upper)
-            if m:
-                student_ans = m.group(1)
-                break
-        
-        # 弱匹配：数字后紧跟字母 "1A" "2D"
-        if not student_ans:
-            m = re.search(rf"(?<!\d){q_num}([A-D])(?!\s*[a-z])", ocr_upper)
-            if m:
-                student_ans = m.group(1)
-        
-        result[q_key] = student_ans
-        if student_ans:
-            found_structured += 1
-    
-    # 模式A成功率高 → 直接返回
-    if found_structured >= question_count * 0.5:
-        return result
-    
-    # ========== 模式B：纯字母序列 ==========
-    # 检测行中是否全是单个字母（手写答卷常见格式："A D C B" 每行几个字母）
-    letter_sequence = []
-    for line in lines:
-        stripped = line.strip().upper()
-        # 去除常见分隔符
-        clean = re.sub(r'[\s.、,，;；()（）\[\]{}|/\\\-_=+*&^%$#@!~`\'"]', '', stripped)
-        if clean and all(c in 'ABCD' for c in clean) and len(clean) <= 4:
-            letter_sequence.extend(list(clean))
-    
-    # 如果找到足够多的纯字母，按顺序分配
-    if len(letter_sequence) >= question_count * 0.6:
-        for i, q_key in enumerate(ordered_keys):
-            if i < len(letter_sequence):
-                result[q_key] = letter_sequence[i]
-            else:
-                result[q_key] = result.get(q_key, "")
-        return result
-    
-    # ========== 模式C：位置排序兜底 ==========
-    if words_result:
-        # 提取所有单字母（A-D）并按坐标排序
-        letter_items = []
-        for item in words_result:
-            word = item.get("words", "").strip().upper()
-            loc = item.get("location", {})
-            # 筛选：长度1-2的字母字符串（手写可能被误加空格或粘连）
-            clean_word = re.sub(r'[^A-D]', '', word)
-            if len(clean_word) == 1 and clean_word in 'ABCD':
-                top = loc.get("top", 0)
-                left = loc.get("left", 0)
-                letter_items.append({
-                    "letter": clean_word,
-                    "y": top,
-                    "x": left
-                })
-        
-        if letter_items:
-            # 按行分组（y坐标相近的视为同一行），行内按x排序
-            letter_items.sort(key=lambda it: it["y"])
-            rows = []
-            current_row = [letter_items[0]]
-            for item in letter_items[1:]:
-                if abs(item["y"] - current_row[-1]["y"]) < 30:  # 同一行阈值
-                    current_row.append(item)
-                else:
-                    rows.append(current_row)
-                    current_row = [item]
-            rows.append(current_row)
-            
-            # 每行内按x排序
-            for row in rows:
-                row.sort(key=lambda it: it["x"])
-            
-            # 展平为有序字母列表
-            ordered_letters = []
-            for row in rows:
-                ordered_letters.extend([it["letter"] for it in row])
-            
-            # 过滤掉可能是题目文字的字母（按位置启发式过滤）
-            # 如果一行中有超过4个字母，可能是题目文本而非答案
-            filtered_letters = []
-            for row in rows:
-                if len(row) <= 4:
-                    filtered_letters.extend([it["letter"] for it in row])
-            
-            # 用过滤后的，如果不够再用未过滤的
-            source = filtered_letters if len(filtered_letters) >= question_count * 0.4 else ordered_letters
-            
-            for i, q_key in enumerate(ordered_keys):
-                if not result.get(q_key) and i < len(source):
-                    result[q_key] = source[i]
-                elif not result.get(q_key):
-                    result[q_key] = ""
-    
-    # 确保所有题都有值
-    for q_key in ordered_keys:
-        if q_key not in result:
-            result[q_key] = ""
-    
-    return result
-
-
-def auto_grade(ocr_result: dict, answer_key: dict, total_score: float) -> tuple:
-    """
-    自动批改：比对 OCR 识别结果和标准答案
-    返回：(ai_score, detail_list)
-    """
-    if not answer_key:
-        return 0.0, []
-    
-    total_questions = len(answer_key)
-    ai_score = 0.0
-    detail_list = []
-    
-    # 每题分值（简化：平均分配）
-    per_question_score = total_score / total_questions if total_questions > 0 else 0
-    
-    for q_key, correct_ans in answer_key.items():
-        student_ans = ocr_result.get(q_key, "")
-        is_correct = False
-        
-        # 判断答案是否正确（支持多选）
-        if isinstance(correct_ans, str) and isinstance(student_ans, str):
-            if not student_ans:
-                is_correct = False  # 未识别到答案
-            elif "，" in student_ans or "," in student_ans:
-                # 多选
-                student_set = set(student_ans.replace(" ", "").split(","))
-                correct_set = set(correct_ans.replace(" ", "").split(","))
-                is_correct = student_set == correct_set
-            else:
-                is_correct = student_ans.strip().upper() == correct_ans.strip().upper()
-        
-        earned_score = per_question_score if is_correct else 0.0
-        if is_correct:
-            ai_score += per_question_score
-            
-        detail_list.append({
-            "question": q_key,
-            "student_answer": student_ans if student_ans else "（未识别）",
-            "correct_answer": correct_ans,
-            "is_correct": is_correct,
-            "score": round(earned_score, 2)
-        })
-    
-    return round(ai_score, 2), detail_list
-
-
 # ===================== 路由 =====================
 
 @router.post("/upload-image", summary="教师：上传学生答卷图片")
+@limiter.limit("10/minute")
 async def upload_answer_image(
+    request: Request,
     paper_id: int = Form(...),
     student_id: str = Form(...),
     file: UploadFile = File(...),
@@ -360,13 +225,15 @@ async def upload_answer_image(
     
     if score_record:
         score_record.answer_image = file_path.replace("\\", "/")
-        db.commit()
+        db.flush()
     
-    return {
-        "message": "上传成功",
-        "file_path": file_path.replace("\\", "/"),
-        "url": f"/static/uploads/{filename}"
-    }
+    return JSONResponse(
+        content={
+            "message": "上传成功",
+            "file_path": file_path.replace("\\", "/"),
+            "url": f"/static/uploads/{filename}"
+        }
+    )
 
 
 @router.post("/recognize", summary="OCR识别学生答案（百度OCR）")
@@ -416,7 +283,7 @@ def ocr_recognize(
     if score_record:
         score_record.ai_result = ocr_result
         score_record.status = 1  # AI批阅中
-        db.commit()
+        db.flush()
     
     return {
         "message": "OCR识别完成（百度OCR）",
@@ -465,12 +332,12 @@ def auto_grade_api(
         score_record.status = 1
     
     # 自动批改
-    ai_score, detail_list = auto_grade(ocr_result, answer_key, float(paper.total_score))
+    ai_score, detail_list = auto_grade_answers(ocr_result, answer_key, float(paper.total_score))
     
     # 更新数据库
     score_record.ai_score = ai_score
     score_record.status = 2  # 待人工审核
-    db.commit()
+    db.flush()
     
     return {
         "message": "自动批改完成",
@@ -510,3 +377,108 @@ def get_grade_results(
         }
         for s in results
     ]
+
+
+# ===================== LLM 大题批改路由 =====================
+
+@router.post("/llm-grade", summary="AI批改大题（客观题正则+主观题LLM）")
+@limiter.limit("5/minute")
+def llm_grade_api(
+    request: Request,
+    paper_id: int,
+    student_id: str,
+    current_user: UserInfo = Depends(require_teacher),
+    db: Session = Depends(get_db)
+):
+    """
+    混合批改：客观题用正则比对，主观题用 LLM 评分。
+    需要在 .env 中配置 LLM_API_KEY（DeepSeek / 通义千问 / OpenAI 均可）。
+    """
+    paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="试卷不存在")
+
+    if not paper.answer_key:
+        raise HTTPException(status_code=400, detail="该试卷未设置标准答案")
+
+    answer_key = paper.answer_key if isinstance(paper.answer_key, dict) else json.loads(paper.answer_key)
+
+    score_record = db.query(Score).filter(
+        Score.paper_id == paper_id,
+        Score.student_id == student_id
+    ).first()
+
+    if not score_record or not score_record.answer_image:
+        raise HTTPException(status_code=400, detail="该学生尚未上传答卷图片")
+
+    # 检查是否存在主观题
+    has_subjective = any(
+        isinstance(v, dict) and v.get("type") == "subjective"
+        for v in answer_key.values()
+    )
+
+    # 调用 OCR 识别
+    try:
+        ocr_raw_text, words_result = call_baidu_ocr(score_record.answer_image)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OCR识别失败: {str(e)}")
+
+    # 解析客观题答案
+    from services.ocr_service import parse_ocr_text_to_answers
+    ocr_result = parse_ocr_text_to_answers(ocr_raw_text, answer_key, words_result)
+
+    # 保存 OCR 结果
+    score_record.ai_result = ocr_result
+    score_record.status = 1
+    db.flush()
+
+    if not has_subjective:
+        # 没有主观题，走纯客观题批改
+        from services.ocr_service import auto_grade_answers
+        ai_score, detail_list = auto_grade_answers(ocr_result, answer_key, float(paper.total_score))
+
+        score_record.ai_score = ai_score
+        score_record.status = 2
+        db.flush()
+
+        return {
+            "message": "客观题批改完成（无主观题）",
+            "student_id": student_id,
+            "ai_score": ai_score,
+            "total_score": float(paper.total_score),
+            "detail": detail_list,
+            "ocr_result": ocr_result,
+            "ocr_raw_text": ocr_raw_text,
+            "answer_key": answer_key,
+            "has_subjective": False,
+        }
+
+    # 有主观题 → 混合批改
+    try:
+        ai_score, detail_list = grade_mixed_answers(
+            ocr_raw_text, answer_key, float(paper.total_score), ocr_result
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM批改失败: {str(e)}")
+
+    # 更新数据库
+    score_record.ai_score = ai_score
+    score_record.status = 2  # 待人工审核
+    db.flush()
+
+    return {
+        "message": "AI批改完成（客观题+主观题）",
+        "student_id": student_id,
+        "ai_score": ai_score,
+        "total_score": float(paper.total_score),
+        "detail": detail_list,
+        "ocr_result": ocr_result,
+        "ocr_raw_text": ocr_raw_text,
+        "answer_key": answer_key,
+        "has_subjective": True,
+    }
+

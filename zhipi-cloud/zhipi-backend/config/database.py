@@ -32,9 +32,20 @@ Base = declarative_base()
 
 
 def get_db():
-    """FastAPI 依赖注入：获取数据库会话"""
+    """
+    FastAPI 依赖注入：获取数据库会话
+
+    自动管理事务生命周期：
+    - 正常完成：提交事务
+    - 发生异常：回滚事务
+    - 无论如何：关闭会话，归还连接到连接池
+    """
     db = SessionLocal()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

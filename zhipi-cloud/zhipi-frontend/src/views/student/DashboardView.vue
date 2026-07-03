@@ -44,7 +44,9 @@
     <div class="content-grid">
       <div class="card">
         <h3 class="card-title">最近考试成绩</h3>
-        <div v-if="loadingScores" class="loading">加载中...</div>
+        <div v-if="loadingScores" class="skeleton-table-body">
+          <SkeletonLoader v-for="i in 4" :key="i" variant="table-row" />
+        </div>
         <div v-else-if="myScores.length === 0" class="empty-state">
           <div class="icon">📝</div>
           <p>暂无成绩数据</p>
@@ -107,9 +109,11 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { statsApi } from '@/api'
+import { useUserStore } from '@/stores/user'
+import SkeletonLoader from '@/components/SkeletonLoader.vue'
 
-const user = JSON.parse(localStorage.getItem('user') || '{}')
-const userName = computed(() => user.name || '同学')
+const userStore = useUserStore()
+const userName = computed(() => userStore.user?.name || '同学')
 const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })
 
 const myScores = ref([])

@@ -22,6 +22,9 @@
   --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
   --radius: 12px;
   --radius-sm: 8px;
+  /* 骨架屏 */
+  --skeleton-base: #e2e8f0;
+  --skeleton-shine: #f1f5f9;
 }
 
 body {
@@ -199,4 +202,125 @@ body {
 @media (max-width: 768px) {
   .card { padding: 16px; }
   .page-title { font-size: 18px; }
+}
+
+/* ==================== Android / 移动端适配 ==================== */
+
+/* 安全区域：避免内容被状态栏/导航栏遮挡 */
+body {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  -webkit-tap-highlight-color: transparent;
+  /* 防止 iOS 橡皮筋效果导致误触 */
+  overscroll-behavior: none;
+}
+
+/* 触控友好：按钮最小 44px */
+@media (pointer: coarse) {
+  .btn {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 10px 20px;
+    font-size: 15px;
+  }
+
+  .form-input,
+  .form-select {
+    min-height: 44px;
+    font-size: 16px; /* 防止 iOS 缩放 */
+  }
+
+  /* 扩大可点击区域 */
+  .table td,
+  .table th {
+    padding: 14px 12px;
+  }
+
+  /* 去掉 hover 效果（移动端无意义且可能导致粘滞） */
+  .btn-primary:hover {
+    transform: none;
+  }
+  .btn-secondary:hover {
+    background: var(--bg);
+  }
+  .table tr:hover {
+    background: transparent;
+  }
+
+  /* 禁用文本选择（避免误触选中） */
+  .card, .btn, .badge, nav, header {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+}
+
+/* 表格横滚：移动端超宽表格可以左右滑动 */
+@media (max-width: 640px) {
+  .table-responsive {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .table-responsive .table {
+    min-width: 600px;
+  }
+
+  .card {
+    padding: 14px;
+    border-radius: 10px;
+  }
+
+  .page-title {
+    font-size: 18px;
+  }
+}
+
+/* ==================== 路由过渡动画 ==================== */
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* ==================== 骨架屏通用布局 ==================== */
+.skeleton-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0;
+}
+.skeleton-card-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+.skeleton-table-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ==================== 响应式辅助 ==================== */
+.hide-mobile {
+  display: none;
+}
+
+@media (min-width: 769px) {
+  .hide-mobile { display: initial; }
+  .hide-desktop { display: none; }
+}
+
+/* 安全区域内边距（移动端顶栏） */
+@supports (padding-top: env(safe-area-inset-top)) {
+  .top-bar {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
 }

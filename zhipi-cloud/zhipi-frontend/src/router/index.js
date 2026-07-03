@@ -1,110 +1,85 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
+import { useUserStore } from '@/stores/user'
 
 const routes = [
-  // 默认重定向到登录
-  {
-    path: '/',
-    redirect: '/login'
-  },
-  // 登录页
+  { path: '/', redirect: '/login' },
   {
     path: '/login',
     name: 'Login',
     component: () => import('@/views/login/LoginView.vue'),
     meta: { requiresGuest: true }
   },
-  // 教师端
   {
+    path: '/register',
+    name: 'Register',
+    component: () => import('@/views/login/RegisterView.vue'),
+    meta: { requiresGuest: true }
+  },
+    {
     path: '/teacher',
     component: () => import('@/views/teacher/TeacherLayout.vue'),
     meta: { requiresAuth: true, role: 'teacher' },
     children: [
-      {
-        path: '',
-        redirect: '/teacher/dashboard'
-      },
-      {
-        path: 'dashboard',
-        name: 'TeacherDashboard',
-        component: () => import('@/views/teacher/DashboardView.vue'),
-      },
-      {
-        path: 'marking',
-        name: 'TeacherMarking',
-        component: () => import('@/views/teacher/MarkingView.vue'),
-      },
-      {
-        path: 'analysis',
-        name: 'TeacherAnalysis',
-        component: () => import('@/views/teacher/AnalysisView.vue'),
-      },
-      {
-        path: 'papers',
-        name: 'TeacherPapers',
-        component: () => import('@/views/teacher/PapersView.vue'),
-      }
+      { path: '', redirect: '/teacher/dashboard' },
+      { path: 'dashboard', name: 'TeacherDashboard', component: () => import('@/views/teacher/DashboardView.vue') },
+      { path: 'marking',   name: 'TeacherMarking',   component: () => import('@/views/teacher/MarkingView.vue') },
+      { path: 'marking/:paperId/:studentId',   name: 'TeacherMarkingDetail',   component: () => import('@/views/teacher/MarkingDetailView.vue'), props: true },
+      { path: 'analysis',  name: 'TeacherAnalysis',  component: () => import('@/views/teacher/AnalysisView.vue') },
+      { path: 'papers',    name: 'TeacherPapers',    component: () => import('@/views/teacher/PapersView.vue') },
     ]
   },
-  // 学生端
   {
     path: '/student',
     component: () => import('@/views/student/StudentLayout.vue'),
     meta: { requiresAuth: true, role: 'student' },
     children: [
-      {
-        path: '',
-        redirect: '/student/dashboard'
-      },
-      {
-        path: 'dashboard',
-        name: 'StudentDashboard',
-        component: () => import('@/views/student/DashboardView.vue'),
-      },
-      {
-        path: 'score',
-        name: 'StudentScore',
-        component: () => import('@/views/student/ScoreView.vue'),
-      },
-      {
-        path: 'trend',
-        name: 'StudentTrend',
-        component: () => import('@/views/student/TrendView.vue'),
-      }
+      { path: '', redirect: '/student/dashboard' },
+      { path: 'dashboard', name: 'StudentDashboard', component: () => import('@/views/student/DashboardView.vue') },
+      { path: 'score',     name: 'StudentScore',     component: () => import('@/views/student/ScoreView.vue') },
+      { path: 'trend',     name: 'StudentTrend',     component: () => import('@/views/student/TrendView.vue') },
     ]
   },
-  // 404
   {
-    path: '/:pathMatch(.*)*',
-    redirect: '/login'
-  }
+    path: '/admin',
+    component: () => import('@/views/admin/AdminLayout.vue'),
+    meta: { requiresAuth: true, role: 'admin' },
+    children: [
+      { path: '', redirect: '/admin/dashboard' },
+      { path: 'dashboard', name: 'AdminDashboard', component: () => import('@/views/admin/DashboardView.vue') },
+      { path: 'users',     name: 'AdminUsers',     component: () => import('@/views/admin/UsersView.vue') },
+      { path: 'classes',   name: 'AdminClasses',   component: () => import('@/views/admin/ClassesView.vue') },
+      { path: 'papers',    name: 'AdminPapers',    component: () => import('@/views/admin/PapersView.vue') },
+      { path: 'logs',      name: 'AdminLogs',      component: () => import('@/views/admin/LogsView.vue') },
+    ]
+  },
+  { path: '/:pathMatch(.*)*', redirect: '/login' }
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  // Hash 模式：WebView 不支持 HTML5 History API，必须用 hash 路由
+  history: createWebHashHistory(),
   routes
 })
 
 // ===================== 路由守卫 =====================
-router.beforeEach((to, from, next) => {
-  const token = localStorage.getItem('token')
-  const userStr = localStorage.getItem('user')
-  const user = userStr ? JSON.parse(userStr) : null
+function getHomeByRole(role) {
+  if (role === 'admin') return '/admin'
+  if (role === 'teacher') return '/teacher'
+  return '/student'
+}
 
-  // 需要登录但未登录
-  if (to.meta.requiresAuth && !token) {
+router.beforeEach((to, from, next) => {
+  const userStore = useUserStore()
+
+  if (to.meta.requiresAuth && !userStore.token) {
     return next('/login')
   }
-
-  // 已登录访问登录页，重定向到对应首页
-  if (to.meta.requiresGuest && token && user) {
-    return next(user.role === 'teacher' ? '/teacher' : '/student')
+  if (to.meta.requiresGuest && userStore.token && userStore.user) {
+    return next(getHomeByRole(userStore.user.role))
   }
-
-  // 角色权限检查
-  if (to.meta.role && user && user.role !== to.meta.role) {
-    return next(user.role === 'teacher' ? '/teacher' : '/student')
+  if (to.meta.role && userStore.user && userStore.user.role !== to.meta.role) {
+    return next(getHomeByRole(userStore.user.role))
   }
-
   next()
 })
 
