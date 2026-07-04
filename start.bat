@@ -1,10 +1,8 @@
 @echo off
 chcp 65001 >nul
-setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 set "PYTHON=C:\Users\HP\.workbuddy\binaries\python\versions\3.13.12\python.exe"
-set "BACKEND=%~dp0zhipi-cloud\zhipi-backend"
 set "URL=http://localhost:8000"
 
 echo ===============================
@@ -12,48 +10,18 @@ echo   ZhiPi Cloud - Local Start
 echo ===============================
 echo.
 
-:: ─── Step 1: 检查数据库是否已初始化 ───
+:: --- Step 1: Check database ---
 echo [1/3] Checking database ...
-"%PYTHON%" -c "
-import sys, os
-sys.path.insert(0, os.path.join(r'%BACKEND%'))
-import pymysql
-
-env = {}
-with open(os.path.join(r'%BACKEND%', '.env'), 'r', encoding='utf-8') as f:
-    for line in f:
-        line = line.strip()
-        if '=' in line and not line.startswith('#'):
-            k, v = line.split('=', 1)
-            env[k.strip()] = v.strip()
-
-try:
-    conn = pymysql.connect(
-        host=env.get('DB_HOST', 'localhost'),
-        port=int(env.get('DB_PORT', '3306')),
-        user=env['DB_USER'], password=env['DB_PASSWORD'],
-        database=env.get('DB_NAME', 'zhipi_cloud'), charset='utf8mb4'
-    )
-    cursor = conn.cursor()
-    cursor.execute('SELECT COUNT(*) FROM admin')
-    count = cursor.fetchone()[0]
-    cursor.close(); conn.close()
-    if count > 0:
-        print('READY')
-    else:
-        print('EMPTY')
-except Exception:
-    print('MISSING')
-" 2>nul | findstr READY >nul
-
+"%PYTHON%" "%~dp0scripts\check_db.py" >nul 2>nul
 if %errorlevel% equ 0 (
-    echo       Database OK - tables exist
+    echo       Database OK
 ) else (
-    echo       Database not initialized, running init script ...
+    echo       Database not initialized, running init ...
     "%PYTHON%" "%~dp0scripts\init_database.py"
     if errorlevel 1 (
         echo.
-        echo [ERROR] Database init failed. Check MySQL is running and .env is correct.
+        echo [ERROR] Database init failed.
+        echo         Check MySQL is running and .env is correct.
         pause
         exit /b 1
     )
@@ -61,14 +29,14 @@ if %errorlevel% equ 0 (
 
 echo.
 
-:: ─── Step 2: 启动后端 ───
+:: --- Step 2: Start backend ---
 echo [2/3] Starting backend ...
 start "ZhiPi-Backend" cmd /k "%~dp0scripts\run-backend.bat"
 echo       Backend launched on port 8000
 
 echo.
 
-:: ─── Step 3: 等待后端就绪后打开浏览器 ───
+:: --- Step 3: Wait for server then open browser ---
 echo [3/3] Waiting for server ...
 set "READY=0"
 for /l %%i in (1,1,15) do (
@@ -80,11 +48,12 @@ for /l %%i in (1,1,15) do (
         )
     )
 )
-if "%READY%"=="1" (
+if "!READY!"=="1" (
     echo       Server is ready!
     start "" "%URL%"
 ) else (
-    echo       [WARN] Server not responding yet, open %URL% manually
+    echo       [WARN] Server not responding yet.
+    echo       Open %URL% manually.
 )
 
 echo.
