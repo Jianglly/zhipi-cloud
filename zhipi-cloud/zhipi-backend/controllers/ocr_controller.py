@@ -26,6 +26,7 @@ from models import Score, Paper
 from controllers.auth_controller import require_teacher, UserInfo
 from services.ocr_service import parse_ocr_text_to_answers, auto_grade_answers
 from services.llm_service import grade_mixed_answers
+from services.question_search_service import call_llm_search, search_answers_from_image
 
 router = APIRouter(prefix="/api/ocr", tags=["OCR批阅"])
 
@@ -481,4 +482,216 @@ def llm_grade_api(
         "answer_key": answer_key,
         "has_subjective": True,
     }
+
+
+# ===================== LLM 搜题批改路由 =====================
+
+@router.post("/search-answers", summary="教师上传试卷图片→DeepSeek搜答案")
+@limiter.limit("5/minute")
+async def search_answers(
+    request: Request,
+    file: UploadFile = File(...),
+    subject: str = Form(...),
+    total_score: float = Form(100),
+    paper_id: int = Form(None),
+    current_user: UserInfo = Depends(require_teacher),
+    db: Session = Depends(get_db)
+):
+    """
+    上传试卷原题图片，DeepSeek自动识别题目并给出标准答案。
+
+    — 无需手动录入 answer_key，拍照即可
+    — 支持选择题（ABCD）、填空题、主观题（含评分要点）
+    — 可选传入 paper_id，自动将搜到的答案保存到试卷
+
+    返回 format:
+        {"answer_key": {"q1": "A", ...}, "ocr_text": "...", "question_count": 15}
+    """
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只支持图片文件")
+
+    # 保存临时文件
+    file_ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"search_{current_user.user_id}_{timestamp}.{file_ext}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+
+    try:
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+
+    # OCR + LLM搜题
+    try:
+        answer_key = search_answers_from_image(file_path, subject, total_score)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"搜题失败: {str(e)}")
+
+    # 统计题目数量
+    obj_count = sum(1 for v in answer_key.values() if isinstance(v, str))
+    subj_count = sum(1 for v in answer_key.values()
+                     if isinstance(v, dict) and v.get("type") == "subjective")
+    fill_count = sum(1 for v in answer_key.values()
+                     if isinstance(v, dict) and v.get("type") == "fill_blank")
+
+    # 如果传了 paper_id，自动保存 answer_key
+    saved = False
+    if paper_id:
+        paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
+        if paper:
+            paper.answer_key = answer_key
+            paper.status = 1  # 已发布
+            db.flush()
+            saved = True
+
+    return JSONResponse(content={
+        "message": "搜题完成",
+        "subject": subject,
+        "answer_key": answer_key,
+        "question_count": len(answer_key),
+        "objective_count": obj_count,
+        "subjective_count": subj_count,
+        "fill_blank_count": fill_count,
+        "saved_to_paper": saved,
+        "paper_id": paper_id if saved else None,
+    })
+
+
+@router.post("/search-grade", summary="搜题+保存answer_key+自动批改全链路")
+@limiter.limit("3/minute")
+async def search_and_grade_all(
+    request: Request,
+    file: UploadFile = File(...),
+    paper_id: int = Form(...),
+    current_user: UserInfo = Depends(require_teacher),
+    db: Session = Depends(get_db)
+):
+    """
+    一键搜题批改：上传试卷图片 → OCR → DeepSeek搜答案 → 存answer_key → 批改所有学生。
+
+    这是最方便的全自动入口：
+    教师只需要拍一张试卷原题图 + 指定 paper_id，系统自动完成搜题、存答案、批全班的流程。
+
+    前置条件：学生答卷图片已上传（通过 POST /api/ocr/upload-image）
+    """
+    paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="试卷不存在")
+
+    # 验证文件类型
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只支持图片文件")
+
+    # 保存图片
+    file_ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"paper_{paper_id}_{timestamp}.{file_ext}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+
+    try:
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"文件保存失败: {str(e)}")
+
+    total_score = float(paper.total_score)
+
+    # ===== 步骤1: 搜题 =====
+    try:
+        answer_key = search_answers_from_image(file_path, paper.subject, total_score)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=f"搜题失败: {str(e)}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"答案解析失败: {str(e)}")
+
+    # ===== 步骤2: 保存 answer_key =====
+    paper.answer_key = answer_key
+    paper.status = 2  # 批阅中
+    db.flush()
+
+    # ===== 步骤3: 获取所有待批阅学生 =====
+    score_records = db.query(Score).filter(
+        Score.paper_id == paper_id,
+        Score.status.in_([0, 1])
+    ).all()
+
+    if not score_records:
+        return JSONResponse(content={
+            "message": "搜题完成，但该试卷下没有待批阅的学生答卷",
+            "paper_id": paper_id,
+            "answer_key": answer_key,
+            "question_count": len(answer_key),
+            "graded_count": 0,
+        })
+
+    # ===== 步骤4: 逐个批改 =====
+    graded_count = 0
+    errors = []
+
+    for score_record in score_records:
+        try:
+            if not score_record.answer_image:
+                errors.append({
+                    "student_id": score_record.student_id,
+                    "name": score_record.name,
+                    "error": "未上传答卷图片",
+                })
+                continue
+
+            # OCR识别学生答案
+            ocr_raw_text, words_result = call_baidu_ocr(score_record.answer_image)
+            ocr_result = parse_ocr_text_to_answers(ocr_raw_text, answer_key, words_result)
+
+            # 判断是否包含主观题
+            has_subjective = any(
+                isinstance(v, dict) and v.get("type") == "subjective"
+                for v in answer_key.values()
+            )
+
+            if has_subjective:
+                # 混合批改（客观题正则 + 主观题LLM）
+                ai_score, detail_list = grade_mixed_answers(
+                    ocr_raw_text, answer_key, total_score, ocr_result
+                )
+            else:
+                # 纯客观题批改
+                ai_score, detail_list = auto_grade_answers(
+                    ocr_result, answer_key, total_score
+                )
+
+            score_record.ai_result = ocr_result
+            score_record.ai_score = ai_score
+            score_record.status = 2  # 待人工审核
+            graded_count += 1
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            errors.append({
+                "student_id": score_record.student_id,
+                "name": score_record.name,
+                "error": str(e),
+            })
+
+    db.flush()
+
+    return JSONResponse(content={
+        "message": f"搜题批改完成: {graded_count}/{len(score_records)} 名学生已批改",
+        "paper_id": paper_id,
+        "subject": paper.subject,
+        "total_score": total_score,
+        "answer_key": answer_key,
+        "question_count": len(answer_key),
+        "total_students": len(score_records),
+        "graded_count": graded_count,
+        "error_count": len(errors),
+        "errors": errors,
+    })
 

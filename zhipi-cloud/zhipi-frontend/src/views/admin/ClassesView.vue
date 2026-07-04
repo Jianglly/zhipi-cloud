@@ -44,7 +44,7 @@
         <div class="modal-form">
           <div class="form-group" v-if="!editMode">
             <label>班级编号</label>
-            <input v-model="form.class_id" class="form-input" placeholder="如 高三六班" />
+            <input v-model="form.class_id" class="form-input" placeholder="如 2501（入学年份+班级号）" />
           </div>
           <div class="form-group">
             <label>班级名称</label>

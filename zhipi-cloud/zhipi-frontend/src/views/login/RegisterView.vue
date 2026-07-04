@@ -28,18 +28,6 @@
       <!-- 注册表单 -->
       <form @submit.prevent="handleRegister" class="login-form">
         <div class="form-group">
-          <label class="form-label">
-            {{ form.role === 'teacher' ? '教师编号' : '学号' }}
-          </label>
-          <input
-            v-model.trim="form.user_id"
-            class="form-input"
-            :placeholder="form.role === 'teacher' ? '请输入教师编号（如 T008）' : '请输入学号（如 2414100311）'"
-            required
-          />
-        </div>
-
-        <div class="form-group">
           <label class="form-label">姓名</label>
           <input
             v-model.trim="form.name"
@@ -50,9 +38,13 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label">所在班级</label>
+          <label class="form-label">
+            {{ form.role === 'teacher' ? '任教班级' : '所在班级' }}
+          </label>
+          <!-- 学生：单选下拉 -->
           <select
-            v-model="form.class_id"
+            v-if="form.role === 'student'"
+            v-model="form.class_ids[0]"
             class="form-input"
             required
           >
@@ -61,17 +53,36 @@
               {{ c.class_name }}（{{ c.class_id }}）
             </option>
           </select>
+          <!-- 教师：多选复选框 -->
+          <div v-else class="class-checkboxes">
+            <label
+              v-for="c in classList"
+              :key="c.class_id"
+              class="checkbox-label"
+              :class="{ disabled: !form.class_ids.includes(c.class_id) && form.class_ids.length >= 3 }"
+            >
+              <input
+                type="checkbox"
+                :value="c.class_id"
+                :checked="form.class_ids.includes(c.class_id)"
+                :disabled="!form.class_ids.includes(c.class_id) && form.class_ids.length >= 3"
+                @change="toggleClass(c.class_id)"
+              />
+              {{ c.class_name }}（{{ c.class_id }}）
+            </label>
+          </div>
+          <span v-if="form.role === 'teacher'" class="field-hint">最多选择 3 个班级</span>
         </div>
 
         <!-- 教师注册需要填写任教科目 -->
         <div v-if="form.role === 'teacher'" class="form-group">
           <label class="form-label">任教科目</label>
-          <input
-            v-model.trim="form.subject"
-            class="form-input"
-            placeholder="请输入任教科目（如 数据库系统）"
-            required
-          />
+          <select v-model="form.subject" class="form-input" required>
+            <option value="" disabled>请选择科目</option>
+            <option value="语文">语文</option>
+            <option value="数学">数学</option>
+            <option value="英语">英语</option>
+          </select>
         </div>
 
         <div class="form-group">
@@ -139,9 +150,8 @@ const successMsg = ref('')
 
 const form = reactive({
   role: 'student',
-  user_id: '',
   name: '',
-  class_id: '',
+  class_ids: [''],
   subject: '',
   password: '',
   confirm_password: '',
@@ -160,17 +170,33 @@ onMounted(async () => {
 
 function switchRole(r) {
   form.role = r
-  // 切换角色时清空科目字段
   form.subject = ''
+  form.class_ids = ['']
   errorMsg.value = ''
   successMsg.value = ''
 }
 
+function toggleClass(cid) {
+  const idx = form.class_ids.indexOf(cid)
+  if (idx >= 0) {
+    form.class_ids.splice(idx, 1)
+  } else if (form.class_ids.length < 3) {
+    form.class_ids.push(cid)
+  }
+  // 确保至少有一个空字符串占位
+  if (form.class_ids.length === 0) form.class_ids = ['']
+}
+
 function validate() {
-  if (!form.user_id) return `${form.role === 'teacher' ? '教师编号' : '学号'}不能为空`
   if (!form.name) return '姓名不能为空'
-  if (!form.class_id) return '请选择所在班级'
-  if (form.role === 'teacher' && !form.subject) return '教师请填写任教科目'
+  if (form.role === 'student') {
+    if (!form.class_ids[0]) return '请选择所在班级'
+  } else {
+    const valid = form.class_ids.filter(c => c)
+    if (valid.length === 0) return '教师至少选择一个任教班级'
+    if (valid.length > 3) return '教师最多任教 3 个班级'
+    if (!form.subject) return '请选择任教科目'
+  }
   if (form.password.length < 6) return '密码至少 6 位'
   if (form.password !== form.confirm_password) return '两次输入的密码不一致'
   return null
@@ -190,9 +216,10 @@ async function handleRegister() {
   try {
     const res = await userStore.register({
       role: form.role,
-      user_id: form.user_id,
       name: form.name,
-      class_id: form.class_id,
+      class_ids: form.role === 'student'
+        ? [form.class_ids[0]]
+        : form.class_ids.filter(c => c),
       subject: form.role === 'teacher' ? form.subject : null,
       password: form.password,
       confirm_password: form.confirm_password,
@@ -345,5 +372,37 @@ async function handleRegister() {
   border-radius: 8px;
   font-size: 14px;
   color: #64748b;
+}
+
+.class-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #374151;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.checkbox-label.disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #4f46e5;
+}
+.field-hint {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 2px;
 }
 </style>

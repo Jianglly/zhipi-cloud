@@ -124,11 +124,12 @@
           <!-- 题目列表 -->
           <div class="answer-key-list">
             <div v-for="(item, idx) in answerKeyItems" :key="idx" class="ak-row"
-                 :class="{ 'ak-subjective': item.type === 'subjective' }">
+                 :class="{ 'ak-subjective': item.type === 'subjective', 'ak-fillblank': item.type === 'fill_blank' }">
               <div class="ak-row-left">
                 <input v-model="item.q" class="ak-q-input" placeholder="题号" />
                 <select v-model="item.type" class="ak-type-select" @change="onTypeChange(item)">
-                  <option value="objective">客观题</option>
+                  <option value="objective">选择题</option>
+                  <option value="fill_blank">填空题</option>
                   <option value="subjective">主观题</option>
                 </select>
               </div>
@@ -137,9 +138,9 @@
                   <input v-model="item.answer" class="ak-ans-input" placeholder="正确答案（如 A、B、AB）" />
                 </template>
                 <template v-else>
-                  <input v-model="item.answer" class="ak-ans-input ak-ans-long" placeholder="参考答案" />
+                  <input v-model="item.answer" class="ak-ans-input ak-ans-long" :placeholder="item.type === 'fill_blank' ? '参考答案' : '参考答案'" />
                   <input v-model.number="item.score" type="number" class="ak-score-input" placeholder="分值" min="0" />
-                  <input v-model="item.keywords" class="ak-kw-input" placeholder="关键词（逗号分隔）" />
+                  <input v-if="item.type === 'subjective'" v-model="item.keywords" class="ak-kw-input" placeholder="关键词（逗号分隔）" />
                 </template>
                 <button class="ak-del-btn" @click="removeAnswerItem(idx)" title="删除此题">✕</button>
               </div>
@@ -154,7 +155,8 @@
               <summary class="bulk-toggle">批量输入（展开后可快速粘贴多题答案）</summary>
               <div class="bulk-hint">
                 格式：每行一题<br>
-                客观题：<code>q1=A</code><br>
+                选择题：<code>q1=A</code><br>
+                填空题：<code>q3=参考答案|分值|fill</code><br>
                 主观题：<code>q5=参考答案|分值|关键词1,关键词2</code>
               </div>
               <textarea v-model="bulkText" class="form-input bulk-textarea" rows="5"
@@ -344,7 +346,15 @@ const openAnswerKeyModal = async (paper) => {
       for (const [q, val] of Object.entries(detail.answer_key)) {
         if (typeof val === 'string') {
           answerKeyItems.value.push({ q, type: 'objective', answer: val, score: null, keywords: '' })
-        } else if (typeof val === 'object' && val.type === 'subjective') {
+        } else if (typeof val === 'object' && val.type === 'fill_blank') {
+          answerKeyItems.value.push({
+            q,
+            type: 'fill_blank',
+            answer: val.answer || '',
+            score: val.score || null,
+            keywords: '',
+          })
+        } else if (typeof val === 'object' && (val.type === 'subjective' || !val.type)) {
           answerKeyItems.value.push({
             q,
             type: 'subjective',
@@ -395,6 +405,9 @@ const onTypeChange = (item) => {
     item.keywords = ''
   } else {
     if (!item.score) item.score = 10
+    if (item.type === 'fill_blank') {
+      item.keywords = ''
+    }
   }
 }
 
@@ -415,16 +428,29 @@ const parseBulkText = () => {
     }
     const q = line.substring(0, eqIdx).trim()
     const rest = line.substring(eqIdx + 1).trim()
-    // 检查是否有 | 分隔（主观题）
+    // 检查是否有 | 分隔（填空题/主观题）
     if (rest.includes('|')) {
       const parts = rest.split('|')
-      newItems.push({
-        q,
-        type: 'subjective',
-        answer: (parts[0] || '').trim(),
-        score: parts[1] ? Number(parts[1].trim()) : 10,
-        keywords: (parts[2] || '').trim(),
-      })
+      const lastPart = (parts[parts.length - 1] || '').trim().toLowerCase()
+      if (lastPart === 'fill') {
+        // 填空题格式：q3=参考答案|分值|fill
+        newItems.push({
+          q,
+          type: 'fill_blank',
+          answer: (parts[0] || '').trim(),
+          score: parts[1] ? Number(parts[1].trim()) : 5,
+          keywords: '',
+        })
+      } else {
+        // 主观题格式：q5=参考答案|分值|关键词1,关键词2
+        newItems.push({
+          q,
+          type: 'subjective',
+          answer: (parts[0] || '').trim(),
+          score: parts[1] ? Number(parts[1].trim()) : 10,
+          keywords: (parts[2] || '').trim(),
+        })
+      }
     } else {
       newItems.push({
         q,
@@ -454,7 +480,13 @@ const saveAnswerKey = async () => {
   // 构建 answer_key JSON
   const answerKey = {}
   for (const item of validItems) {
-    if (item.type === 'subjective') {
+    if (item.type === 'fill_blank') {
+      answerKey[item.q.trim()] = {
+        type: 'fill_blank',
+        answer: item.answer.trim(),
+        score: item.score || 5,
+      }
+    } else if (item.type === 'subjective') {
       answerKey[item.q.trim()] = {
         type: 'subjective',
         answer: item.answer.trim(),
@@ -549,6 +581,7 @@ onMounted(loadPapers)
   border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc;
 }
 .ak-subjective { border-color: #c7d2fe; background: #eef2ff; }
+.ak-fillblank { border-color: #fde68a; background: #fffbeb; }
 .ak-row-left { display: flex; gap: 6px; flex-shrink: 0; }
 .ak-row-right { display: flex; gap: 6px; flex: 1; align-items: center; }
 .ak-q-input { width: 60px; padding: 6px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }

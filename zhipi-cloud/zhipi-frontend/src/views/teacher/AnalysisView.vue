@@ -11,13 +11,7 @@
     <div class="card filter-card">
       <div class="filter-row">
         <div class="form-group" style="flex:1">
-          <label class="form-label">科目</label>
-          <select v-model="filter.subject" class="form-select">
-            <option v-for="s in allSubjects" :key="s" :value="s">{{ s }}</option>
-          </select>
-        </div>
-        <div class="form-group" style="flex:1">
-          <label class="form-label">考试日期（可选）</label>
+          <label class="form-label">考试日期</label>
           <input v-model="filter.exam_date" type="date" class="form-input" />
         </div>
         <div class="form-group" style="align-self: flex-end">
@@ -31,7 +25,7 @@
     <!-- 成绩分布图 -->
     <div class="charts-grid">
       <div class="card">
-        <h3 class="card-title">成绩分布（{{ filter.subject }}）</h3>
+        <h3 class="card-title">成绩分布（{{ teacherSubject }}）</h3>
         <div v-if="distributionData" style="position:relative;height:260px">
           <canvas ref="barChartRef"></canvas>
         </div>
@@ -122,10 +116,21 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { statsApi } from '@/api'
-import { ALL_SUBJECTS, DEFAULT_SUBJECT } from '@/constants'
 import SkeletonLoader from '@/components/SkeletonLoader.vue'
 
-const filter = ref({ subject: DEFAULT_SUBJECT, exam_date: '' })
+// 从 localStorage 获取教师任教科目
+const userInfo = JSON.parse(localStorage.getItem('user') || '{}')
+const teacherSubject = userInfo.subject || ''
+
+// 默认日期为今天
+const todayStr = () => {
+  const d = new Date()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
+
+const filter = ref({ exam_date: todayStr() })
 const rankingData = ref([])
 const overviewData = ref([])
 const distributionData = ref(null)
@@ -137,9 +142,9 @@ const loadData = async () => {
   loading.value = true
   try {
     const [ranking, overview, dist] = await Promise.all([
-      statsApi.getClassRanking(filter.value.subject, filter.value.exam_date || null),
-      statsApi.getClassOverview(null, filter.value.subject),
-      statsApi.getScoreDistribution(filter.value.subject, filter.value.exam_date || null),
+      statsApi.getClassRanking(teacherSubject, filter.value.exam_date || null),
+      statsApi.getClassOverview(null, teacherSubject),
+      statsApi.getScoreDistribution(teacherSubject, filter.value.exam_date || null),
     ])
     rankingData.value = ranking || []
     overviewData.value = overview || []

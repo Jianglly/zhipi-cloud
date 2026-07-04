@@ -160,8 +160,8 @@
         <!-- 选择试卷 -->
         <div v-if="!batchProcessing && batchResults.length === 0" class="batch-step">
           <p class="batch-hint">
-            选择一张试卷，系统将对所有已上传答卷的学生一键执行 OCR 识别 + 自动批改。
-            <strong>仅支持选择题（客观题）试卷。</strong>
+            选择一张试卷，系统将对所有已上传答卷的学生一键执行 OCR 识别 + 选择题自动批改。
+            <strong>填空题/主观题需教师手动评分。</strong>
           </p>
 
           <div v-if="batchPaperGroups.length === 0" class="empty-batch">
@@ -181,7 +181,7 @@
               <div class="paper-card-meta">
                 <span>{{ group.readyCount }} 人可批阅</span>
                 <span v-if="!group.has_answer_key" class="badge badge-warning">未录入答案</span>
-                <span v-else-if="group.has_subjective" class="badge badge-warning">含主观题</span>
+                <span v-else-if="group.has_subjective" class="badge badge-info">含主观题</span>
                 <span v-else class="badge badge-success">可批量批阅</span>
               </div>
             </div>
@@ -415,10 +415,6 @@ const canStartBatch = computed(() => {
   if (!selectedBatchGroup.value || batchSelectedIds.value.length === 0) return false
   if (!selectedBatchGroup.value.has_answer_key) {
     batchError.value = '该试卷未录入标准答案，请先到试卷管理录入'
-    return false
-  }
-  if (selectedBatchGroup.value.has_subjective) {
-    batchError.value = '该试卷包含主观题，批量批阅仅支持选择题试卷'
     return false
   }
   batchError.value = ''

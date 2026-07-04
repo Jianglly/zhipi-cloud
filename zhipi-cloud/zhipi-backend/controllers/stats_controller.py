@@ -12,6 +12,7 @@ from datetime import date
 from config.database import get_db
 from models import Score, Student, Paper
 from controllers.auth_controller import get_current_user, require_teacher, require_student, UserInfo
+from controllers.paper_controller import _get_teacher_class_ids
 
 router = APIRouter(prefix="/api/stats", tags=["统计分析"])
 
@@ -158,9 +159,14 @@ def get_class_overview(
     current_user: UserInfo = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    """教师查看班级整体成绩概况（教师子模式）"""
-    # 如果未指定班级，默认查自己负责的班级
+    """教师查看班级整体成绩概况（仅限任教科目和任教班级）"""
+    teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
     target_class = class_id or current_user.class_id
+    if target_class not in teacher_classes:
+        return []
+
+    # 默认只查教师任教科目
+    target_subject = subject or current_user.subject
 
     query = db.query(
         Score.subject,
@@ -174,10 +180,8 @@ def get_class_overview(
         func.min(Score.score).label("min_score"),
     ).join(Paper, Score.paper_id == Paper.paper_id)\
      .filter(Score.class_id == target_class)\
+     .filter(Score.subject == target_subject)\
      .filter(Score.status == 3)
-
-    if subject:
-        query = query.filter(Score.subject == subject)
 
     results = query.group_by(
         Score.subject, Score.exam_date, Score.class_id, Paper.title, Paper.total_score
@@ -201,19 +205,25 @@ def get_class_overview(
 
 @router.get("/teacher/class-ranking", summary="教师：班级成绩排名")
 def get_class_ranking(
-    subject: str = Query(..., description="科目"),
+    subject: Optional[str] = Query(None, description="科目（不传则使用教师任教科目）"),
     exam_date: Optional[date] = Query(None),
     class_id: Optional[str] = Query(None),
     current_user: UserInfo = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    """教师查看班级学生成绩排名"""
+    """教师查看班级学生成绩排名（仅限任教科目和任教班级）"""
+    teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
     target_class = class_id or current_user.class_id
+    if target_class not in teacher_classes:
+        return []
+    target_subject = subject or current_user.subject
+    if target_subject != current_user.subject:
+        return []
 
     query = db.query(Score, Paper)\
         .join(Paper, Score.paper_id == Paper.paper_id)\
         .filter(Score.class_id == target_class)\
-        .filter(Score.subject == subject)\
+        .filter(Score.subject == target_subject)\
         .filter(Score.status == 3)
 
     if exam_date:
@@ -246,8 +256,12 @@ def get_class_students(
     current_user: UserInfo = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    """教师查询班级学生名单"""
+    """教师查询班级学生名单（仅限任教班级）"""
+    teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
     target_class = class_id or current_user.class_id
+    if target_class not in teacher_classes:
+        return []
+
     students = db.query(Student).filter(Student.class_id == target_class).all()
     return [
         {
@@ -261,19 +275,25 @@ def get_class_students(
 
 @router.get("/teacher/score-distribution", summary="教师：成绩分布（用于柱状图）")
 def get_score_distribution(
-    subject: str = Query(...),
+    subject: Optional[str] = Query(None),
     exam_date: Optional[date] = Query(None),
     class_id: Optional[str] = Query(None),
     current_user: UserInfo = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    """教师查看成绩分布区间，用于前端柱状图"""
+    """教师查看成绩分布区间，用于前端柱状图（仅限任教科目和任教班级）"""
+    teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
     target_class = class_id or current_user.class_id
+    target_subject = subject or current_user.subject
+    if target_class not in teacher_classes or target_subject != current_user.subject:
+        return {"distribution": {"90-100": 0, "75-89": 0, "60-74": 0, "0-59": 0},
+                "labels": ["优秀(90+)", "良好(75-89)", "及格(60-74)", "不及格(0-59)"],
+                "values": [0, 0, 0, 0]}
 
     query = db.query(Score, Paper)\
         .join(Paper, Score.paper_id == Paper.paper_id)\
         .filter(Score.class_id == target_class)\
-        .filter(Score.subject == subject)\
+        .filter(Score.subject == target_subject)\
         .filter(Score.status == 3)
 
     if exam_date:

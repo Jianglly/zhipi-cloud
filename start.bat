@@ -1,5 +1,6 @@
 @echo off
 chcp 65001 >nul
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 set "PYTHON=C:\Users\HP\.workbuddy\binaries\python\versions\3.13.12\python.exe"
@@ -13,12 +14,12 @@ echo.
 :: --- Step 1: Check database ---
 echo [1/3] Checking database ...
 "%PYTHON%" "%~dp0scripts\check_db.py" >nul 2>nul
-if %errorlevel% equ 0 (
+if !errorlevel! equ 0 (
     echo       Database OK
 ) else (
     echo       Database not initialized, running init ...
-    "%PYTHON%" "%~dp0scripts\init_database.py"
-    if errorlevel 1 (
+    call "%~dp0scripts\init-database.bat" --auto
+    if !errorlevel! neq 0 (
         echo.
         echo [ERROR] Database init failed.
         echo         Check MySQL is running and .env is correct.

@@ -37,6 +37,7 @@ export const useUserStore = defineStore('user', () => {
       name: res.name,
       role: res.role,
       class_id: res.class_id,
+      subject: res.subject || null,
     }
     token.value = res.access_token
     user.value = userData

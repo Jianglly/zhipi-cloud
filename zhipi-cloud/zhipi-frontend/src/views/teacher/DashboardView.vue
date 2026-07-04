@@ -46,9 +46,8 @@
       <div class="card">
         <div class="card-header">
           <h3>班级考试概览</h3>
-          <select v-model="selectedSubject" class="form-select mini-select" @change="loadOverview">
-            <option value="">全部科目</option>
-            <option v-for="s in allSubjects" :key="s" :value="s">{{ s }}</option>
+          <select v-model="selectedClass" class="form-select mini-select" @change="loadOverview">
+            <option v-for="c in teacherClasses" :key="c.class_id" :value="c.class_id">{{ c.class_name }}</option>
           </select>
         </div>
         <div v-if="loadingOverview" class="skeleton-table-body" style="padding: 0">
@@ -119,8 +118,7 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { statsApi } from '@/api'
-import { ALL_SUBJECTS } from '@/constants'
+import { statsApi, paperApi } from '@/api'
 import { useUserStore } from '@/stores/user'
 import SkeletonLoader from '@/components/SkeletonLoader.vue'
 
@@ -130,23 +128,37 @@ const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: '
 
 const overview = ref({ total_papers: 0, completed_scores: 0, pending_scores: 0, total_students: 0 })
 const classOverview = ref([])
-const selectedSubject = ref('')
-const allSubjects = ALL_SUBJECTS
+const selectedClass = ref('')
+const teacherClasses = ref([])
 const loadingOverview = ref(false)
 
 const loadOverview = async () => {
   loadingOverview.value = true
   try {
-    const data = await statsApi.getClassOverview(null, selectedSubject.value || null)
+    const class_id = selectedClass.value || null
+    const [data, studentsData] = await Promise.all([
+      statsApi.getClassOverview(class_id, null),
+      statsApi.getStudents(class_id),
+    ])
     classOverview.value = data || []
-    // 简单统计
     overview.value.total_papers = data?.length || 0
-    const studentsData = await statsApi.getStudents()
     overview.value.total_students = studentsData?.length || 0
   } catch (e) {
     classOverview.value = []
   } finally {
     loadingOverview.value = false
+  }
+}
+
+const loadTeacherClasses = async () => {
+  try {
+    const classes = await paperApi.getClasses()
+    teacherClasses.value = classes || []
+    if (teacherClasses.value.length > 0 && !selectedClass.value) {
+      selectedClass.value = teacherClasses.value[0].class_id
+    }
+  } catch (e) {
+    teacherClasses.value = []
   }
 }
 
@@ -157,7 +169,10 @@ const getScoreClass = (score, total) => {
   return 'text-danger'
 }
 
-onMounted(loadOverview)
+onMounted(async () => {
+  await loadTeacherClasses()
+  loadOverview()
+})
 </script>
 
 <style scoped>

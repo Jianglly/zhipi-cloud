@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from config.database import get_db
 from config.rate_limit import limiter
-from models import Student, Teacher, ClassInfo, Admin
+from models import Student, Teacher, ClassInfo, Admin, TeacherClass
 from services.security_service import verify_password, hash_password, create_access_token, decode_token
 from schemas import LoginRequest, LoginResponse, UserInfo, RegisterRequest
 
@@ -78,6 +78,50 @@ def require_admin(current_user: UserInfo = Depends(get_current_user)) -> UserInf
     return current_user
 
 
+# ===================== 编号生成工具函数 =====================
+
+SUBJECT_CODE_MAP = {"语文": "1", "数学": "2", "英语": "3"}
+
+
+def _generate_teacher_id(db: Session, subject: str) -> str:
+    """按科目生成新的教师编号：T + 科目码 + 2位序号"""
+    code = SUBJECT_CODE_MAP.get(subject)
+    if not code:
+        raise ValueError(f"无效科目：{subject}")
+    prefix = f"T{code}"
+    # 查询同科目教师最大序号
+    latest = db.query(Teacher.teacher_id)\
+        .filter(Teacher.teacher_id.startswith(prefix))\
+        .order_by(Teacher.teacher_id.desc()).first()
+    if latest:
+        try:
+            seq = int(latest[0][2:])  # 去掉 T1 前缀
+        except ValueError:
+            seq = 0
+    else:
+        seq = 0
+    return f"{prefix}{seq + 1:02d}"
+
+
+def _generate_student_id(db: Session, class_id: str) -> str:
+    """按班级生成新的学生编号：S + 班级码 + 2位班内序号"""
+    cls = db.query(ClassInfo).filter(ClassInfo.class_id == class_id).first()
+    if not cls or cls.class_code is None:
+        raise ValueError(f"班级 {class_id} 不存在或缺少 class_code")
+    prefix = f"S{cls.class_code}"
+    latest = db.query(Student.student_id)\
+        .filter(Student.student_id.startswith(prefix))\
+        .order_by(Student.student_id.desc()).first()
+    if latest:
+        try:
+            seq = int(latest[0][2:])
+        except ValueError:
+            seq = 0
+    else:
+        seq = 0
+    return f"{prefix}{seq + 1:02d}"
+
+
 # ===================== 路由处理 =====================
 
 @router.post("/login", summary="用户登录")
@@ -135,6 +179,7 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
                 "user_id": user.teacher_id,
                 "name": user.name,
                 "class_id": user.class_id,
+                "subject": user.subject,
             }
         )
 
@@ -172,6 +217,30 @@ def get_me(current_user: UserInfo = Depends(get_current_user)):
     return JSONResponse(content=current_user.model_dump())
 
 
+@router.get("/me/classes", summary="获取当前教师任教班级列表")
+def get_teacher_classes(
+    current_user: UserInfo = Depends(require_teacher),
+    db: Session = Depends(get_db)
+):
+    """教师端获取自己的任教班级列表（含主负责班）"""
+    rows = db.query(TeacherClass.class_id).filter(TeacherClass.teacher_id == current_user.user_id).all()
+    classes = {r[0] for r in rows}
+    t = db.query(Teacher).filter(Teacher.teacher_id == current_user.user_id).first()
+    if t and t.class_id:
+        classes.add(t.class_id)
+
+    class_list = db.query(ClassInfo).filter(ClassInfo.class_id.in_(classes)).order_by(ClassInfo.class_id).all()
+    return JSONResponse(content=[
+        {
+            "class_id": c.class_id,
+            "class_name": c.class_name,
+            "grade": c.grade,
+            "department": c.department,
+        }
+        for c in class_list
+    ])
+
+
 # ===================== 注册 =====================
 
 @router.get("/classes", summary="获取班级列表（注册页公开接口）")
@@ -193,48 +262,57 @@ def get_public_classes(db: Session = Depends(get_db)):
 @limiter.limit("3/minute")
 def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)):
     """
-    统一注册接口
-    - role: "student" | "teacher"
-    - 学生: user_id=学号, name, class_id, password
-    - 教师: user_id=教师编号, name, class_id, subject, password
+    统一注册接口 - 系统自动生成编号
+    - 学生: 填写姓名、班级、密码，系统生成 S+班级码+序号
+    - 教师: 填写姓名、科目、班级(1-3个)、密码，系统生成 T+科目码+序号
     """
-    # 1) 校验班级是否存在
-    cls = db.query(ClassInfo).filter(ClassInfo.class_id == body.class_id).first()
-    if not cls:
+    primary_class_id = body.class_ids[0]
+
+    # 1) 校验所有班级是否存在
+    classes = db.query(ClassInfo).filter(ClassInfo.class_id.in_(body.class_ids)).all()
+    if len(classes) != len(body.class_ids):
+        found_ids = {c.class_id for c in classes}
+        missing = [c for c in body.class_ids if c not in found_ids]
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"班级编号 {body.class_id} 不存在，请重新选择",
+            detail=f"班级不存在：{', '.join(missing)}",
         )
 
-    # 2) 校验编号是否已被注册
     if body.role == "student":
-        existing = db.query(Student).filter(Student.student_id == body.user_id).first()
-        if existing:
+        # 生成学号
+        new_id = _generate_student_id(db, primary_class_id)
+        # 再次校验唯一（理论上不会冲突，但保险）
+        if db.query(Student).filter(Student.student_id == new_id).first():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"学号 {body.user_id} 已注册，请直接登录或更换编号",
+                detail=f"学号 {new_id} 已存在，请重试",
             )
-        # 3) 创建学生
         new_user = Student(
-            student_id=body.user_id,
+            student_id=new_id,
             name=body.name,
-            class_id=body.class_id,
+            class_id=primary_class_id,
             password=hash_password(body.password),
             phone=body.phone,
         )
         pk_field = "student_id"
     else:
-        # 教师注册 — subject 由 Pydantic 校验器保证非空
-        existing = db.query(Teacher).filter(Teacher.teacher_id == body.user_id).first()
-        if existing:
+        # 教师：校验班级数量
+        if len(body.class_ids) > 3:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="教师最多任教 3 个班级",
+            )
+        # 生成教师编号
+        new_id = _generate_teacher_id(db, body.subject)
+        if db.query(Teacher).filter(Teacher.teacher_id == new_id).first():
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"教师编号 {body.user_id} 已注册，请直接登录或更换编号",
+                detail=f"教师编号 {new_id} 已存在，请重试",
             )
         new_user = Teacher(
-            teacher_id=body.user_id,
+            teacher_id=new_id,
             name=body.name,
-            class_id=body.class_id,
+            class_id=primary_class_id,
             subject=body.subject,
             password=hash_password(body.password),
             phone=body.phone,
@@ -245,6 +323,11 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
     db.add(new_user)
     db.flush()
 
+    # 教师需要写入 teacher_class 映射表
+    if body.role == "teacher":
+        for cid in body.class_ids:
+            db.add(TeacherClass(teacher_id=new_id, class_id=cid))
+
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,
         content={
@@ -252,6 +335,7 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
             "user_id": getattr(new_user, pk_field),
             "name": new_user.name,
             "role": body.role,
-            "class_id": new_user.class_id,
+            "class_id": primary_class_id,
+            "class_ids": body.class_ids,
         }
     )

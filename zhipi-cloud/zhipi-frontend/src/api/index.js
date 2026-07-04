@@ -82,6 +82,8 @@ export const authApi = {
     http.get('/auth/classes'),
 
   getMe: () => http.get('/auth/me'),
+
+  getTeacherClasses: () => http.get('/auth/me/classes'),
 }
 
 // ===================== 统计 API =====================

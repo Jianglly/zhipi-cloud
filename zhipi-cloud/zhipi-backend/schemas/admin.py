@@ -2,25 +2,34 @@
 Pydantic 数据模型 - 管理员模块
 智批云后端 - schemas/admin.py
 """
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List
 from datetime import datetime
 
 
 # ===================== 教师 CRUD =====================
 
 class TeacherCreate(BaseModel):
-    teacher_id: str = Field(..., max_length=15, description="教师编号")
+    teacher_id: Optional[str] = Field(None, max_length=15, description="教师编号（留空则自动生成）")
     name: str = Field(..., max_length=15, description="姓名")
-    class_id: str = Field(..., max_length=20, description="负责班级编号")
-    subject: str = Field(..., max_length=15, description="任教科目")
+    class_id: str = Field(..., max_length=20, description="主负责班级编号")
+    class_ids: List[str] = Field(default_factory=list, max_length=3, description="任教班级编号列表，最多3个")
+    subject: str = Field(..., max_length=15, description="任教科目（语文/数学/英语）")
     password: str = Field(default="123456", min_length=6, description="初始密码")
     phone: Optional[str] = Field(None, max_length=15, description="联系电话")
+
+    @field_validator("subject")
+    @classmethod
+    def subject_validate(cls, v):
+        if v not in ("语文", "数学", "英语"):
+            raise ValueError("教师科目只能是语文/数学/英语")
+        return v
 
 
 class TeacherUpdate(BaseModel):
     name: Optional[str] = Field(None, max_length=15)
     class_id: Optional[str] = Field(None, max_length=20)
+    class_ids: Optional[List[str]] = Field(None, max_length=3, description="任教班级编号列表，最多3个")
     subject: Optional[str] = Field(None, max_length=15)
     phone: Optional[str] = Field(None, max_length=15)
 
@@ -38,7 +47,7 @@ class TeacherAdminView(BaseModel):
 # ===================== 学生 CRUD =====================
 
 class StudentCreate(BaseModel):
-    student_id: str = Field(..., max_length=15, description="学号")
+    student_id: Optional[str] = Field(None, max_length=15, description="学号（留空则自动生成）")
     name: str = Field(..., max_length=15, description="姓名")
     class_id: str = Field(..., max_length=20, description="班级编号")
     password: str = Field(default="123456", min_length=6, description="初始密码")

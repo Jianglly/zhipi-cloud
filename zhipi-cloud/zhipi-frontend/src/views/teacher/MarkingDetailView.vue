@@ -90,17 +90,14 @@
               <input ref="fileInput2" type="file" accept="image/*" style="display:none" @change="handleUpload($event)" />
               📷 上传
             </label>
-            <button class="btn btn-primary btn-sm ai-grade-btn" @click="runAutoGrade" :disabled="gradeLoading || llmLoading || !(previewUrl || currentItem.answer_image)">
+            <button class="btn btn-primary btn-sm ai-grade-btn" @click="runAutoGrade" :disabled="gradeLoading || !(previewUrl || currentItem.answer_image)">
               <span v-if="gradeLoading" class="spinner"></span>
-              {{ gradeLoading ? '批改中...' : '🤖 客观题批改' }}
-            </button>
-            <button class="btn btn-llm btn-sm" @click="runLlmGrade" :disabled="gradeLoading || llmLoading || !(previewUrl || currentItem.answer_image)">
-              <span v-if="llmLoading" class="spinner"></span>
-              {{ llmLoading ? 'AI思考中...' : '🧠 大题AI批改' }}
+              {{ gradeLoading ? '识别中...' : '🤖 选择题识别+批改' }}
             </button>
           </div>
           <div v-if="aiScore > 0" class="ai-badge">
-            AI 评分：<strong>{{ aiScore }}</strong> 分
+            选择题自动得分：<strong>{{ aiScore }}</strong> 分
+            <span v-if="hasTextQuestions" class="ai-badge-hint">（填空题/主观题请手动评分）</span>
           </div>
         </div>
 
@@ -128,63 +125,42 @@
 
           <div class="question-list">
             <div v-for="(correctAns, q) in answerKey" :key="q" class="question-row"
-                 :class="{ 'q-correct': studentAnswers[q]?.manualCorrect === true, 'q-wrong': studentAnswers[q]?.manualCorrect === false, 'q-subjective': isSubjective(q) }">
+                 :class="{
+                   'q-correct': studentAnswers[q]?.manualCorrect === true,
+                   'q-wrong': studentAnswers[q]?.manualCorrect === false,
+                   'q-subjective': isSubjective(q),
+                   'q-fillblank': isFillBlank(q)
+                 }">
               <!-- 题头 -->
               <div class="q-header">
                 <span class="q-num">{{ q }}</span>
-                <span class="q-type-tag" v-if="isSubjective(q)">主观题</span>
-                <span class="q-type-tag q-type-obj" v-else>客观题</span>
-                <span class="q-answer-label">{{ isSubjective(q) ? '参考答案：' : '标准答案：' }}</span>
-                <code class="q-answer" v-if="!isSubjective(q)">{{ correctAns }}</code>
-                <span class="q-max-score" v-if="isSubjective(q)">/{{ correctAns.score }}分</span>
+                <span class="q-type-tag q-type-obj" v-if="isObjective(q)">选择题</span>
+                <span class="q-type-tag q-type-fb" v-else-if="isFillBlank(q)">填空题</span>
+                <span class="q-type-tag" v-else>主观题</span>
+                <span class="q-answer-label">{{ isObjective(q) ? '标准答案：' : '参考答案：' }}</span>
+                <code class="q-answer" v-if="isObjective(q)">{{ correctAns }}</code>
+                <span class="q-max-score" v-else>/{{ correctAns.score }}分</span>
               </div>
 
-              <!-- 主观题：展示参考答案 + 学生答案 + AI评分 + 评语 -->
-              <template v-if="isSubjective(q)">
-                <div class="q-subj-ref">参考答案：{{ correctAns.answer }}</div>
-                <div class="q-subj-student">
-                  <span class="q-label">学生答案：</span>
-                  <span class="q-subj-text">{{ studentAnswers[q]?.ocrAns || '（待识别）' }}</span>
-                </div>
-                <div class="q-subj-feedback" v-if="studentAnswers[q]?.feedback">
-                  <span class="q-label">AI评语：</span>
-                  <span class="q-feedback-text">{{ studentAnswers[q].feedback }}</span>
-                </div>
-                <div class="q-body q-subj-actions">
-                  <div class="q-score-input-wrap">
-                    <span class="q-label">AI给分：</span>
-                    <input
-                      v-model.number="studentAnswers[q].manualScore"
-                      type="number"
-                      class="q-score-input"
-                      :min="0"
-                      :max="correctAns.score"
-                      step="0.5"
-                    />
-                    <span class="q-max-suffix">/ {{ correctAns.score }}</span>
-                  </div>
-                </div>
-              </template>
-
-              <!-- 客观题：原有的 ✓/✗ 按钮 -->
-              <template v-else>
+              <!-- 选择题：识别填涂 + ✓/✗ + 直接打分 -->
+              <template v-if="isObjective(q)">
                 <div class="q-body">
                   <div class="q-student-ans">
                     <span class="q-label">学生答案：</span>
-                    <span :class="studentAnswers[q]?.ocrAns ? 'text-blue' : 'text-gray'">
-                      {{ studentAnswers[q]?.ocrAns || '（待识别）' }}
-                    </span>
+                    <span v-if="studentAnswers[q]?.ocrAns" class="bubble-ans">{{ studentAnswers[q].ocrAns }}</span>
+                    <span v-else class="text-gray">（待识别）</span>
                   </div>
                   <div class="q-actions">
-                    <span
-                      :class="['q-score-display', {
-                        'score-correct': studentAnswers[q]?.manualCorrect === true,
-                        'score-wrong': studentAnswers[q]?.manualCorrect === false,
-                        'score-empty': studentAnswers[q]?.manualScore == null
-                      }]"
-                    >
-                      {{ studentAnswers[q]?.manualScore != null ? studentAnswers[q].manualScore : '—' }}
-                    </span>
+                    <input
+                      v-model.number="studentAnswers[q].manualScore"
+                      type="number"
+                      class="q-score-input q-score-input-sm"
+                      :min="0"
+                      :max="maxPerQuestion"
+                      step="0.5"
+                      placeholder="分数"
+                    />
+                    <span class="q-max-suffix-sm">/{{ maxPerQuestion }}</span>
                     <button
                       :class="['q-btn', studentAnswers[q]?.manualCorrect === true ? 'q-btn-correct active' : '']"
                       @click="markQuestion(q, true)"
@@ -197,6 +173,55 @@
                       title="判错">
                       ✗
                     </button>
+                  </div>
+                </div>
+              </template>
+
+              <!-- 填空题：提取并显示手写答案 + 教师打分 -->
+              <template v-else-if="isFillBlank(q)">
+                <div class="q-fillblank-ref">参考答案：{{ correctAns.answer }}</div>
+                <div class="q-subj-student">
+                  <span class="q-label">📝 手写答案：</span>
+                  <span v-if="studentAnswers[q]?.ocrAns" class="q-fillblank-text">{{ studentAnswers[q].ocrAns }}</span>
+                  <span v-else class="text-gray">（待识别，请查看左侧答卷图片）</span>
+                </div>
+                <div class="q-body q-subj-actions">
+                  <div class="q-score-input-wrap">
+                    <span class="q-label">教师给分：</span>
+                    <input
+                      v-model.number="studentAnswers[q].manualScore"
+                      type="number"
+                      class="q-score-input"
+                      :min="0"
+                      :max="correctAns.score"
+                      step="0.5"
+                      placeholder="分数"
+                    />
+                    <span class="q-max-suffix">/ {{ correctAns.score }}</span>
+                  </div>
+                </div>
+              </template>
+
+              <!-- 主观题：参考答案 + 学生答案 + 教师打分（无AI批改） -->
+              <template v-else>
+                <div class="q-subj-ref">参考答案：{{ correctAns.answer }}</div>
+                <div class="q-subj-student">
+                  <span class="q-label">学生答案：</span>
+                  <span class="q-subj-text">{{ studentAnswers[q]?.ocrAns || '（待识别，请查看左侧答卷图片）' }}</span>
+                </div>
+                <div class="q-body q-subj-actions">
+                  <div class="q-score-input-wrap">
+                    <span class="q-label">教师给分：</span>
+                    <input
+                      v-model.number="studentAnswers[q].manualScore"
+                      type="number"
+                      class="q-score-input"
+                      :min="0"
+                      :max="correctAns.score"
+                      step="0.5"
+                      placeholder="分数"
+                    />
+                    <span class="q-max-suffix">/ {{ correctAns.score }}</span>
                   </div>
                 </div>
               </template>
@@ -215,8 +240,8 @@
         <!-- 提交区 -->
         <div class="tool-section">
           <h4 class="section-title">✅ 确认提交</h4>
-          <div v-if="!aiScore && !manualOverride" class="safety-hint">
-            ⚠️ 尚未执行AI批改，提交前建议先点击「AI 批改」获取评分参考
+          <div v-if="!aiScore && !manualOverride && objectiveCount > 0" class="safety-hint">
+            ⚠️ 尚未执行选择题识别，建议先点击「选择题识别+批改」获取自动评分参考
           </div>
           <div class="form-group">
             <label class="form-label">评语（可选）</label>
@@ -302,7 +327,6 @@ const dragStartImgY = ref(0)
 // ============ OCR / 批改状态 ============
 const ocrLoading = ref(false)
 const gradeLoading = ref(false)
-const llmLoading = ref(false)
 const ocrResult = ref(null)
 const aiScore = ref(0)
 const gradeDetail = ref([])
@@ -330,31 +354,45 @@ const confirmModal = reactive({
 
 // ============ 计算属性 ============
 const totalQuestions = computed(() => Object.keys(answerKey.value).length)
+const hasTextQuestions = computed(() => {
+  return Object.values(answerKey.value).some(v => typeof v === 'object')
+})
 const maxTotal = computed(() => {
-  // 从 answer_key 动态计算总分：主观题取 score 字段，客观题均分剩余分数
   const keys = Object.keys(answerKey.value)
   if (keys.length === 0) return 150
-  let subjectiveTotal = 0
+  let textTotal = 0  // 填空题+主观题总分
   let objectiveCount = 0
   for (const q of keys) {
     const v = answerKey.value[q]
-    if (v && typeof v === 'object' && v.type === 'subjective') {
-      subjectiveTotal += v.score || 0
+    if (v && typeof v === 'object') {
+      textTotal += v.score || 0
     } else {
       objectiveCount++
     }
   }
-  // 如果有主观题分数信息，用其总分；客观题部分用试卷总分减去主观题总分
-  // 如果全是客观题，回退到 150
-  if (subjectiveTotal > 0) {
-    return Math.max(subjectiveTotal, 150) // 至少150，兼容旧数据
+  if (textTotal > 0) {
+    return Math.max(textTotal, 150)
   }
   return 150
 })
+const objectiveScoreTotal = computed(() => {
+  // 选择题部分的总分 = 试卷总分 - 填空题/主观题总分
+  const keys = Object.keys(answerKey.value)
+  let textTotal = 0
+  for (const q of keys) {
+    const v = answerKey.value[q]
+    if (v && typeof v === 'object') {
+      textTotal += v.score || 0
+    }
+  }
+  return Math.max(maxTotal.value - textTotal, 0)
+})
+const objectiveCount = computed(() => {
+  return Object.values(answerKey.value).filter(v => typeof v === 'string').length
+})
 const maxPerQuestion = computed(() => {
-  if (totalQuestions.value === 0) return 0
-  // 客观题均分，主观题各自有 score 字段
-  return Math.round(maxTotal.value / totalQuestions.value)
+  if (objectiveCount.value === 0) return 0
+  return Math.round((objectiveScoreTotal.value / objectiveCount.value) * 10) / 10
 })
 
 const manualTotal = computed(() => {
@@ -605,7 +643,7 @@ const handleUpload = async (event) => {
   event.target.value = ''
 }
 
-// ============ 自动批改（唯一入口）==============
+// ============ 自动批改（选择题识别+批改）==============
 const runAutoGrade = async () => {
   if (!currentItem.value) return
   gradeLoading.value = true
@@ -620,15 +658,24 @@ const runAutoGrade = async () => {
     answerKey.value = res.answer_key || {}
     initStudentAnswers()
 
+    // 填充批改结果到 studentAnswers
     gradeDetail.value.forEach(d => {
       if (studentAnswers[d.question]) {
         studentAnswers[d.question].manualCorrect = d.is_correct
-        studentAnswers[d.question].manualScore = d.score
-        studentAnswers[d.question].ocrAns = d.student_answer
+        // 选择题自动填充分数，非选择题不自动填充
+        if (d.type === 'objective') {
+          studentAnswers[d.question].manualScore = d.score
+        }
+        studentAnswers[d.question].ocrAns = d.student_answer !== '（未识别）' && d.student_answer !== '（待识别）'
+          ? d.student_answer
+          : (ocrResult.value[d.question] || '')
       }
     })
 
-    toast.success('AI批改完成！得分：' + res.ai_score + ' 分')
+    const msg = hasTextQuestions.value
+      ? `选择题批改完成！自动得分：${res.ai_score} 分（填空题/主观题请手动评分）`
+      : `选择题批改完成！得分：${res.ai_score} 分`
+    toast.success(msg)
   } catch (e) {
     toast.error('批改失败：' + (e.response?.data?.detail || e.message || '未知错误'))
   } finally {
@@ -636,48 +683,18 @@ const runAutoGrade = async () => {
   }
 }
 
-// ============ LLM 大题批改 ============
-const runLlmGrade = async () => {
-  if (!currentItem.value) return
-  llmLoading.value = true
-  try {
-    const res = await ocrApi.llmGrade(
-      currentItem.value.paper_id,
-      currentItem.value.student_id
-    )
-    aiScore.value = res.ai_score || 0
-    gradeDetail.value = res.detail || []
-    ocrResult.value = res.ocr_result || {}
-    answerKey.value = res.answer_key || {}
-    initStudentAnswers()
-
-    // 填充批改结果到 studentAnswers
-    gradeDetail.value.forEach(d => {
-      if (studentAnswers[d.question]) {
-        studentAnswers[d.question].manualCorrect = d.is_correct
-        studentAnswers[d.question].manualScore = d.score
-        studentAnswers[d.question].ocrAns = d.student_answer || studentAnswers[d.question].ocrAns
-        if (d.feedback) {
-          studentAnswers[d.question].feedback = d.feedback
-        }
-      }
-    })
-
-    const msg = res.has_subjective
-      ? `AI批改完成（客观题+主观题）！得分：${res.ai_score} 分`
-      : `客观题批改完成！得分：${res.ai_score} 分`
-    toast.success(msg)
-  } catch (e) {
-    toast.error('大题批改失败：' + (e.response?.data?.detail || e.message || '未知错误'))
-  } finally {
-    llmLoading.value = false
-  }
+// ============ 判断题目类型 ============
+const isObjective = (q) => {
+  const ans = answerKey.value[q]
+  return typeof ans === 'string'
 }
-
-// ============ 判断是否主观题 ============
+const isFillBlank = (q) => {
+  const ans = answerKey.value[q]
+  return ans && typeof ans === 'object' && ans.type === 'fill_blank'
+}
 const isSubjective = (q) => {
   const ans = answerKey.value[q]
-  return ans && typeof ans === 'object' && ans.type === 'subjective'
+  return ans && typeof ans === 'object' && (ans.type === 'subjective' || !ans.type)
 }
 
 // ============ 初始化 studentAnswers ============
@@ -701,11 +718,6 @@ const markQuestion = (q, correct) => {
   studentAnswers[q].manualCorrect = correct
   // 对了给满分，错了给0分
   studentAnswers[q].manualScore = correct ? maxPerQuestion.value : 0
-  recalcTotal()
-}
-
-const recalcTotal = () => {
-  // 触发 manualTotal 重新计算（computed 会自动更新）
 }
 
 // ============ 确认提交（自定义弹窗）============
@@ -1142,6 +1154,10 @@ onMounted(loadMarkingData)
   background: #f1f5f9;
   color: #64748b;
 }
+.q-type-tag.q-type-fb {
+  background: #fef3c7;
+  color: #92400e;
+}
 .q-max-score {
   font-size: 11px;
   color: #7c3aed;
@@ -1203,6 +1219,69 @@ onMounted(loadMarkingData)
   font-size: 11px;
   color: #94a3b8;
   font-weight: 500;
+}
+
+/* ======== 填空题样式 ======== */
+.question-row.q-fillblank {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.q-fillblank-ref {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.5;
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.6);
+  border-radius: 6px;
+}
+.q-fillblank-text {
+  color: #92400e;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+/* ======== 选择题气泡答案 ======== */
+.bubble-ans {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px; height: 28px;
+  background: #eef2ff;
+  border: 2px solid #6366f1;
+  border-radius: 50%;
+  color: #4f46e5;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+/* ======== 选择题分数输入（小尺寸）======== */
+.q-score-input-sm {
+  width: 50px;
+  padding: 3px 6px;
+  border: 2px solid #6366f1;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  color: #4f46e5;
+  background: #fff;
+}
+.q-score-input-sm:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.15);
+}
+.q-max-suffix-sm {
+  font-size: 10px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+/* ======== AI 提示 ======== */
+.ai-badge-hint {
+  font-size: 11px;
+  color: #92400e;
+  margin-left: 4px;
 }
 
 /* ======== LLM 大题批改按钮 ======== */

@@ -1,68 +1,71 @@
-# 试卷管理增强 + 批量批阅模式 — 完成报告
+# 测试套件 Bug 修复完成
 
-## 一、试卷管理页面增强
+## 问题
 
-### 1. 试卷列表展示
-- 表格新增"标准答案"列：显示「已录入」/「未录入」状态
-- 表格新增"操作"列：提供「答案」「删除」两个按钮
+用户运行 `pytest` 报 `ModuleNotFoundError: No module named 'fixtures'`，整个测试套件无法运行。
 
-### 2. 标准答案录入
-- 点击「答案」按钮弹出录入弹窗
-- **动态题目表单**：每行一道题，可切换客观题/主观题类型
-  - 客观题：输入正确答案（如 A、B、AB）
-  - 主观题：输入参考答案、分值、关键词
-- **批量输入**：展开后可粘贴多行文本快速录入
-  - 客观题格式：`q1=A`
-  - 主观题格式：`q5=参考答案|分值|关键词1,关键词2`
-- 保存后试卷列表的"标准答案"列实时更新
+## 根因分析
 
-### 3. 删除试卷
-- 点击「删除」弹出确认弹窗
-- 提示将同时删除关联的成绩记录
-- 确认后删除试卷+成绩记录
+排查后发现 **6 个独立问题** 叠加在一起：
 
-### 后端新增接口
-| 方法 | 路径 | 功能 |
-|------|------|------|
-| GET | `/api/papers/{paper_id}` | 获取试卷详情（含 answer_key、题目统计） |
-| PUT | `/api/papers/{paper_id}` | 更新试卷（录入/修改标准答案） |
-| DELETE | `/api/papers/{paper_id}` | 删除试卷+关联成绩 |
+| # | 问题 | 根因 |
+|---|------|------|
+| 1 | `No module named 'fixtures'` | `pytest.ini` 缺 `pythonpath`，`tests/` 不在 Python 路径上 |
+| 2 | `No module named 'fixtures.test_data'` | 测试数据全写在 `__init__.py` 里，但导入路径是 `fixtures.test_data`（找 `test_data.py` 文件） |
+| 3 | OCR 模式B 纯字母序列失败 | `len(clean) <= 4` 限制过严，`"ABCDABCDAB"` (10字母) 被拒绝 |
+| 4 | OCR 多选题解析失败 | 模式A 正则 `([A-D])` 只捕获单字母，`"A,B"` 被截断为 `"A"` |
+| 5 | Windows 环境变量超长崩溃 | `backend_env` fixture 的 `os.environ.clear()` 在 Windows 触发 PATH > 32767 字符错误 |
+| 6 | DB 集成测试全部 401 | 没有 MySQL 时集成测试无法登录，报 401 噪音 |
 
-## 二、批量批阅模式
+## 修复内容
 
-### 1. 入口
-- 待批阅列表页右上角「⚡ 批量批阅」按钮
+### 1. 模块导入修复
+- **`pytest.ini`** — 新增 `pythonpath = . tests`
+- **`tests/conftest.py`** — 新增 `tests_dir` 到 `sys.path`
+- **`tests/fixtures/test_data.py`** — 新建文件，从 `__init__.py` 拆出所有测试数据常量
+- **`tests/fixtures/__init__.py`** — 改为 `from fixtures.test_data import *` 重新导出
 
-### 2. 前提校验
-- 选择试卷后自动检查：
-  - 未录入标准答案 → 拦截，提示去试卷管理录入
-  - 含主观题 → 拦截，提示批量批阅仅支持选择题试卷
-  - 通过校验 → 显示"可批量批阅"标记
+### 2. OCR 解析 Bug 修复 (`services/ocr_service.py`)
+- **多选题支持** — 模式A 正则 `([A-D])` → `([A-D](?:\s*[,，]\s*[A-D])*)` 支持 `"A,B"` / `"A,B,C,D"` 格式
+- **纯字母序列** — 模式B 移除 `len(clean) <= 4` 限制，`"ABCDABCDAB"` 不再被拒绝
 
-### 3. 功能流程
-1. **选择试卷**：按 paper_id 分组展示待批阅项，显示可批阅人数
-2. **选择学生**：支持全选/多选，显示已选人数
-3. **开始批阅**：逐个调用 OCR识别+自动批改 API
-4. **实时进度条**：显示 `已完成/总数`、当前处理学生、百分比进度条
-5. **结果列表**：每行显示学生姓名、学号、状态（✅AI得分 / ❌错误信息）
-6. **一键提交**：批阅完成后可一键将所有AI得分提交为最终成绩
+### 3. Windows 兼容性修复
+- **`backend_env` fixture** — 不再 `os.environ.clear()`，改为精确记录和恢复改过的键
 
-### 待批阅列表增强
-- 新增"答案"列：显示「已录入」/「未录入」状态
+### 4. DB 集成测试自动跳过
+- 新增 `db_available` fixture — 检测 MySQL 连通性
+- `app` fixture 无 DB 时 `pytest.skip()` — 67 个集成测试干净跳过，不再报 401
 
-## 三、技术要点
+## 最终测试结果
 
-### FastAPI 路由顺序
-- `/{paper_id}` 路由必须放在 `/pending`、`/classes`、`/completed` 等命名路由之后
-- 否则 FastAPI 会用 `/{paper_id}` 匹配命名路径，导致整数解析失败
+```
+91 passed, 67 skipped, 0 failed, 0 errors in 0.89s
+```
 
-### 文件改动清单
-**后端**：
-- `schemas/paper.py` — 新增 PaperUpdate schema
-- `schemas/__init__.py` — 导出 PaperUpdate
-- `controllers/paper_controller.py` — 新增 GET/PUT/DELETE `/{paper_id}` + 列表加 has_answer_key
+| 测试文件 | 通过 | 跳过 | 说明 |
+|----------|------|------|------|
+| test_ocr_service.py | 32 | 0 | OCR 解析 + 批改单元测试 |
+| test_llm_service.py | 25 | 0 | LLM 批改服务单元测试 |
+| test_question_search.py | 34 | 0 | 搜题服务单元测试 |
+| test_auth.py | 0 | 25 | 需 MySQL（集成测试） |
+| test_ocr_pipeline.py | 0 | 19 | 需 MySQL（集成测试） |
+| test_performance.py | 0 | 23 | 需 MySQL（性能测试） |
 
-**前端**：
-- `src/api/index.js` — paperApi 新增 getDetail/update/delete
-- `src/views/teacher/PapersView.vue` — 重写，加答案录入+删除
-- `src/views/teacher/MarkingView.vue` — 重写，加批量批阅弹窗+进度条
+## 运行方式
+
+```bash
+cd zhipi-cloud/zhipi-backend
+
+# 安装依赖
+pip install -r tests/test_requirements.txt
+
+# 运行全部测试（无 DB 时自动跳过集成测试）
+pytest tests/ -v
+
+# 只运行单元测试
+pytest tests/test_ocr_service.py tests/test_llm_service.py tests/test_question_search.py -v
+
+# 有 MySQL 时运行集成测试
+# 确保 MySQL 运行在 localhost:3307，数据库 zhipi_cloud 已导入种子数据
+pytest tests/ -v
+```

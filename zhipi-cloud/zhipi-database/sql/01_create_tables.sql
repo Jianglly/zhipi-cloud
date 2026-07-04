@@ -17,12 +17,14 @@ USE zhipi_cloud;
 -- 存储班级基本信息
 -- =====================================================
 CREATE TABLE IF NOT EXISTS class (
-    class_id    VARCHAR(20)  NOT NULL COMMENT '班级编号，如 24计科2班',
+    class_id    VARCHAR(20)  NOT NULL COMMENT '班级编号，如 2501（入学年份后两位+班级两位）',
+    class_code  INT          NOT NULL COMMENT '班级内编号，1-9，用于学生ID编码（如2501班为1）',
     class_name  VARCHAR(50)  NOT NULL COMMENT '班级全称',
-    grade       VARCHAR(10)  NOT NULL COMMENT '年级，如 2024',
+    grade       VARCHAR(10)  NOT NULL COMMENT '年级，如 2025',
     department  VARCHAR(50)  DEFAULT NULL COMMENT '所属院系',
     created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (class_id)
+    PRIMARY KEY (class_id),
+    UNIQUE KEY uk_class_code (class_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='班级信息表';
 
 
@@ -49,10 +51,10 @@ CREATE TABLE IF NOT EXISTS student (
 -- 对应数据库设计：teacher_id, name, class, subject, task
 -- =====================================================
 CREATE TABLE IF NOT EXISTS teacher (
-    teacher_id  VARCHAR(15)  NOT NULL COMMENT '教师编号，主键',
+    teacher_id  VARCHAR(15)  NOT NULL COMMENT '教师编号，T+科目码(1位)+入职序号(2位)，如 T101',
     name        VARCHAR(15)  NOT NULL COMMENT '教师姓名',
-    class_id    VARCHAR(20)  NOT NULL COMMENT '负责班级，外键关联class表',
-    subject     VARCHAR(15)  NOT NULL COMMENT '任教科目',
+    class_id    VARCHAR(20)  NOT NULL COMMENT '主负责班级，外键关联class表',
+    subject     VARCHAR(15)  NOT NULL COMMENT '任教科目（仅语文/数学/英语）',
     password    VARCHAR(255) NOT NULL DEFAULT '123456' COMMENT '登录密码（加密存储）',
     task        INT          NOT NULL DEFAULT 0 COMMENT '累计批阅任务数',
     phone       VARCHAR(15)  DEFAULT NULL COMMENT '联系电话',
@@ -62,6 +64,21 @@ CREATE TABLE IF NOT EXISTS teacher (
     KEY idx_class (class_id),
     CONSTRAINT fk_teacher_class FOREIGN KEY (class_id) REFERENCES class (class_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='教师信息表';
+
+
+-- =====================================================
+-- 3.5 教师-班级映射表 (teacher_class)
+-- 一位教师最多任教 3 个班级
+-- =====================================================
+CREATE TABLE IF NOT EXISTS teacher_class (
+    teacher_id  VARCHAR(15)  NOT NULL COMMENT '教师编号',
+    class_id    VARCHAR(20)  NOT NULL COMMENT '班级编号',
+    created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (teacher_id, class_id),
+    KEY idx_class (class_id),
+    CONSTRAINT fk_tc_teacher FOREIGN KEY (teacher_id) REFERENCES teacher (teacher_id) ON DELETE CASCADE,
+    CONSTRAINT fk_tc_class   FOREIGN KEY (class_id)   REFERENCES class   (class_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='教师任教班级映射表';
 
 
 -- =====================================================
@@ -127,7 +144,20 @@ CREATE TABLE IF NOT EXISTS score (
 
 
 -- =====================================================
--- 6. 操作日志表 (operation_log)
+-- 6. 管理员表 (admin)
+-- 系统管理员账号
+-- =====================================================
+CREATE TABLE IF NOT EXISTS admin (
+    admin_id    VARCHAR(15)  NOT NULL COMMENT '管理员编号',
+    name        VARCHAR(15)  NOT NULL COMMENT '管理员姓名',
+    password    VARCHAR(255) NOT NULL COMMENT '密码（bcrypt加密）',
+    created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (admin_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='管理员信息表';
+
+
+-- =====================================================
+-- 7. 操作日志表 (operation_log)
 -- 安全与日志审计模块
 -- =====================================================
 CREATE TABLE IF NOT EXISTS operation_log (

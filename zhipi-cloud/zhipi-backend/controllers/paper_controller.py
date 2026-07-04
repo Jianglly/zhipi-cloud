@@ -2,16 +2,35 @@
 试卷管理控制器 - 教师管理试卷、查看待批阅列表
 智批云后端 - controllers/paper_controller.py
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from config.database import get_db
-from models import Score, Paper, Student, ClassInfo
+from models import Score, Paper, Student, ClassInfo, TeacherClass
 from controllers.auth_controller import require_teacher, get_current_user
 from schemas import PaperCreate, PaperUpdate, UserInfo
 
 router = APIRouter(prefix="/api/papers", tags=["试卷管理"])
+
+
+# ===================== 教师权限校验工具 =====================
+
+def _get_teacher_class_ids(db: Session, teacher_id: str) -> set:
+    """获取教师任教的班级 ID 集合（含主负责班）"""
+    rows = db.query(TeacherClass.class_id).filter(TeacherClass.teacher_id == teacher_id).all()
+    classes = {r[0] for r in rows}
+    from models import Teacher
+    t = db.query(Teacher).filter(Teacher.teacher_id == teacher_id).first()
+    if t and t.class_id:
+        classes.add(t.class_id)
+    return classes
+
+
+def _teacher_can_access(db: Session, teacher_user: UserInfo, paper: Paper) -> bool:
+    """教师能否查看/操作该试卷：科目一致且班级在任教范围内"""
+    teacher_classes = _get_teacher_class_ids(db, teacher_user.user_id)
+    return paper.subject == teacher_user.subject and paper.class_id in teacher_classes
 
 
 # ===================== 试卷列表 / 创建 =====================
@@ -32,15 +51,22 @@ def get_papers(
             Paper.class_id == current_user.class_id,
             Paper.status.in_([1, 2, 3])
         )
-    else:
-        # 教师可以按班级筛选
+    elif current_user.role == "teacher":
+        # 教师只能看任教科目 + 任教班级的试卷
+        teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
+        query = query.filter(
+            Paper.subject == current_user.subject,
+            Paper.class_id.in_(teacher_classes)
+        )
         if class_id:
+            if class_id not in teacher_classes:
+                return []
             query = query.filter(Paper.class_id == class_id)
-        elif current_user.role == "teacher":
-            query = query.filter(Paper.teacher_id == current_user.user_id)
-
-    if subject:
-        query = query.filter(Paper.subject == subject)
+        if subject:
+            if subject != current_user.subject:
+                return []
+            query = query.filter(Paper.subject == subject)
+    # admin 角色可查看全部（由 admin_controller 负责）
 
     papers = query.order_by(Paper.exam_date.desc()).all()
 
@@ -71,7 +97,19 @@ def create_paper(
     current_user: UserInfo = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    """教师创建新试卷"""
+    """教师创建新试卷（只能创建自己任教科目和任教班级的试卷）"""
+    if data.subject != current_user.subject:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"您只能创建 {current_user.subject} 科目的试卷"
+        )
+    teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
+    if data.class_id not in teacher_classes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="您没有任教该班级的权限"
+        )
+
     paper = Paper(
         title=data.title,
         subject=data.subject,
@@ -96,8 +134,12 @@ def get_classes(
     current_user: UserInfo = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """获取所有班级列表（用于创建试卷时选择适用班级）"""
-    classes = db.query(ClassInfo).order_by(ClassInfo.class_id).all()
+    """获取班级列表（教师仅能看到任教班级，管理员/学生可看到全部）"""
+    query = db.query(ClassInfo).order_by(ClassInfo.class_id)
+    if current_user.role == "teacher":
+        teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
+        query = query.filter(ClassInfo.class_id.in_(teacher_classes))
+    classes = query.all()
     return [
         {
             "class_id": c.class_id,
@@ -115,17 +157,24 @@ def get_pending_scores(
     current_user: UserInfo = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    """教师查看待批阅的答卷列表（含安全恢复：状态异常但未完成批阅的记录也会显示）"""
+    """教师查看待批阅的答卷列表（仅限任教科目和任教班级）"""
     from sqlalchemy import or_, and_
 
-    target_class = class_id or current_user.class_id
+    teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
+    target_class = class_id
+    if not target_class:
+        target_class = current_user.class_id
+    if target_class not in teacher_classes:
+        return []
+
     results = db.query(Score, Paper)\
         .join(Paper, Score.paper_id == Paper.paper_id)\
         .filter(Score.class_id == target_class)\
+        .filter(Paper.subject == current_user.subject)\
         .filter(
             or_(
-                Score.status.in_([0, 1, 2]),                    # 正常待批阅状态
-                and_(Score.status == 3, Score.manual_score == None)  # 异常完成但未手动批阅
+                Score.status.in_([0, 1, 2]),
+                and_(Score.status == 3, Score.manual_score == None)
             )
         )\
         .order_by(Score.status.asc(), Score.created_at.desc()).all()
@@ -156,28 +205,20 @@ def get_completed_scores(
     current_user: UserInfo = Depends(require_teacher),
     db: Session = Depends(get_db)
 ):
-    """教师查看已批阅的答卷列表（status=3 且 manual_score 不为空）"""
+    """教师查看已批阅的答卷列表（仅限任教科目和任教班级）"""
     from sqlalchemy import or_
 
-    target_class = class_id or current_user.class_id
-
-    # 如果无法确定班级，尝试从该教师创建的试卷中推断
+    teacher_classes = _get_teacher_class_ids(db, current_user.user_id)
+    target_class = class_id
     if not target_class:
-        teacher_papers = db.query(Paper).filter(Paper.teacher_id == current_user.user_id).all()
-        if teacher_papers:
-            target_class = [p.class_id for p in teacher_papers]
-        else:
-            return []
+        target_class = current_user.class_id
+    if target_class not in teacher_classes:
+        return []
 
-    query = db.query(Score, Paper)\
-        .join(Paper, Score.paper_id == Paper.paper_id)
-
-    if isinstance(target_class, list):
-        query = query.filter(Score.class_id.in_(target_class))
-    else:
-        query = query.filter(Score.class_id == target_class)
-
-    results = query\
+    results = db.query(Score, Paper)\
+        .join(Paper, Score.paper_id == Paper.paper_id)\
+        .filter(Score.class_id == target_class)\
+        .filter(Paper.subject == current_user.subject)\
         .filter(Score.status == 3)\
         .filter(Score.manual_score != None)\
         .order_by(Score.updated_at.desc()).all()
@@ -212,6 +253,12 @@ def submit_score(
     db: Session = Depends(get_db)
 ):
     """教师手动批阅或审核AI批阅结果"""
+    paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="试卷不存在")
+    if current_user.role == "teacher" and not _teacher_can_access(db, current_user, paper):
+        raise HTTPException(status_code=403, detail="您没有批阅该试卷的权限")
+
     score_record = db.query(Score).filter(
         Score.paper_id == paper_id,
         Score.student_id == student_id
@@ -219,9 +266,6 @@ def submit_score(
 
     if not score_record:
         # 如果不存在则创建
-        paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
-        if not paper:
-            raise HTTPException(status_code=404, detail="试卷不存在")
         student = db.query(Student).filter(Student.student_id == student_id).first()
         if not student:
             raise HTTPException(status_code=404, detail="学生不存在")
@@ -269,6 +313,12 @@ def recover_score(
     if not score_record:
         raise HTTPException(status_code=404, detail="成绩记录不存在")
 
+    paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="试卷不存在")
+    if not _teacher_can_access(db, current_user, paper):
+        raise HTTPException(status_code=403, detail="您没有操作该试卷的权限")
+
     # 只恢复状态，保留已保存的分数数据
     score_record.status = 2
     score_record.manual_score = None
@@ -296,6 +346,9 @@ def get_paper_detail(
     if not paper:
         raise HTTPException(status_code=404, detail="试卷不存在")
 
+    if current_user.role == "teacher" and not _teacher_can_access(db, current_user, paper):
+        raise HTTPException(status_code=403, detail="您没有查看该试卷的权限")
+
     answer_key = paper.answer_key
     if answer_key and not isinstance(answer_key, dict):
         import json
@@ -305,11 +358,16 @@ def get_paper_detail(
     has_subjective = False
     objective_count = 0
     subjective_count = 0
+    fill_blank_count = 0
     if answer_key:
         for v in answer_key.values():
-            if isinstance(v, dict) and v.get("type") == "subjective":
-                has_subjective = True
-                subjective_count += 1
+            if isinstance(v, dict):
+                q_type = v.get("type", "subjective")
+                if q_type == "fill_blank":
+                    fill_blank_count += 1
+                else:
+                    has_subjective = True
+                    subjective_count += 1
             else:
                 objective_count += 1
 
@@ -332,7 +390,8 @@ def get_paper_detail(
         "has_subjective": has_subjective,
         "objective_count": objective_count,
         "subjective_count": subjective_count,
-        "total_questions": objective_count + subjective_count,
+        "fill_blank_count": fill_blank_count,
+        "total_questions": objective_count + subjective_count + fill_blank_count,
     }
 
 
@@ -347,6 +406,9 @@ def update_paper(
     paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
     if not paper:
         raise HTTPException(status_code=404, detail="试卷不存在")
+
+    if not _teacher_can_access(db, current_user, paper):
+        raise HTTPException(status_code=403, detail="您没有修改该试卷的权限")
 
     # 只有出卷教师本人可以修改
     if paper.teacher_id != current_user.user_id:
@@ -386,6 +448,9 @@ def delete_paper(
     paper = db.query(Paper).filter(Paper.paper_id == paper_id).first()
     if not paper:
         raise HTTPException(status_code=404, detail="试卷不存在")
+
+    if not _teacher_can_access(db, current_user, paper):
+        raise HTTPException(status_code=403, detail="您没有删除该试卷的权限")
 
     # 只有出卷教师本人可以删除
     if paper.teacher_id != current_user.user_id:

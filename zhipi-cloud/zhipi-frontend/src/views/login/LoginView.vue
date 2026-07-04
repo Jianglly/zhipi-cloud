@@ -42,7 +42,7 @@
           <input
             v-model="userId"
             class="form-input"
-            :placeholder="role === 'teacher' ? '请输入教师编号（如 T001）' : role === 'student' ? '请输入学号（如 2414100311）' : '请输入管理员账号'"
+            :placeholder="role === 'teacher' ? '请输入教师编号（如 T101）' : role === 'student' ? '请输入学号（如 S101）' : '请输入管理员账号'"
             required
             autocomplete="username"
           />
@@ -70,8 +70,8 @@
       <!-- 演示账号提示 -->
       <div class="demo-hint">
         <p>🔑 演示账号</p>
-        <p>教师：T007 / 123456</p>
-        <p>学生：S032 / 123456</p>
+        <p>教师：T101 / 123456（语文）</p>
+        <p>学生：S101 / 123456</p>
         <p>管理员：admin / 123456</p>
       </div>
 

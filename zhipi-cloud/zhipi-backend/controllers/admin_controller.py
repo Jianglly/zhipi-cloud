@@ -8,14 +8,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text, func
 
 from config.database import get_db
-from models import Student, Teacher, ClassInfo, Paper, Score, Admin
+from models import Student, Teacher, ClassInfo, Paper, Score, Admin, TeacherClass
 from schemas import (
     TeacherCreate, TeacherUpdate,
     StudentCreate, StudentUpdate,
     ClassCreate, ClassUpdate,
     ResetPassword,
 )
-from controllers.auth_controller import require_admin
+from controllers.auth_controller import require_admin, _generate_teacher_id, _generate_student_id
 from services.security_service import hash_password
 
 router = APIRouter(prefix="/api/admin", tags=["管理员"])
@@ -86,18 +86,20 @@ def list_teachers(
             Teacher.name.contains(keyword) | Teacher.teacher_id.contains(keyword)
         )
     teachers = query.order_by(Teacher.teacher_id).all()
-    return JSONResponse(content=[
-        {
+    result = []
+    for t in teachers:
+        class_ids = [r[0] for r in db.query(TeacherClass.class_id).filter(TeacherClass.teacher_id == t.teacher_id).all()]
+        result.append({
             "teacher_id": t.teacher_id,
             "name": t.name,
             "class_id": t.class_id,
+            "class_ids": class_ids,
             "subject": t.subject,
             "task": t.task,
             "phone": t.phone,
             "created_at": t.created_at.isoformat() if t.created_at else None,
-        }
-        for t in teachers
-    ])
+        })
+    return JSONResponse(content=result)
 
 
 @router.post("/teachers", summary="新增教师")
@@ -106,13 +108,24 @@ def create_teacher(
     admin=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    if db.query(Teacher).filter(Teacher.teacher_id == body.teacher_id).first():
-        raise HTTPException(400, detail=f"教师编号 {body.teacher_id} 已存在")
+    # 自动生成编号（如果未指定）
+    teacher_id = body.teacher_id
+    if not teacher_id:
+        teacher_id = _generate_teacher_id(db, body.subject)
+
+    if db.query(Teacher).filter(Teacher.teacher_id == teacher_id).first():
+        raise HTTPException(400, detail=f"教师编号 {teacher_id} 已存在")
     if not db.query(ClassInfo).filter(ClassInfo.class_id == body.class_id).first():
         raise HTTPException(400, detail=f"班级 {body.class_id} 不存在")
 
+    # 校验任教班级
+    class_ids = list(dict.fromkeys([body.class_id] + (body.class_ids or [])))[:3]
+    valid_classes = db.query(ClassInfo.class_id).filter(ClassInfo.class_id.in_(class_ids)).count()
+    if valid_classes != len(class_ids):
+        raise HTTPException(400, detail="存在无效的任教班级")
+
     teacher = Teacher(
-        teacher_id=body.teacher_id,
+        teacher_id=teacher_id,
         name=body.name,
         class_id=body.class_id,
         subject=body.subject,
@@ -120,6 +133,11 @@ def create_teacher(
         phone=body.phone,
     )
     db.add(teacher)
+    db.flush()
+
+    for cid in class_ids:
+        db.add(TeacherClass(teacher_id=teacher.teacher_id, class_id=cid))
+
     db.commit()
     return JSONResponse(content={"message": "教师创建成功", "teacher_id": teacher.teacher_id})
 
@@ -213,13 +231,18 @@ def create_student(
     admin=Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    if db.query(Student).filter(Student.student_id == body.student_id).first():
-        raise HTTPException(400, detail=f"学号 {body.student_id} 已存在")
+    # 自动生成编号（如果未指定）
+    student_id = body.student_id
+    if not student_id:
+        student_id = _generate_student_id(db, body.class_id)
+
+    if db.query(Student).filter(Student.student_id == student_id).first():
+        raise HTTPException(400, detail=f"学号 {student_id} 已存在")
     if not db.query(ClassInfo).filter(ClassInfo.class_id == body.class_id).first():
         raise HTTPException(400, detail=f"班级 {body.class_id} 不存在")
 
     student = Student(
-        student_id=body.student_id,
+        student_id=student_id,
         name=body.name,
         class_id=body.class_id,
         password=hash_password(body.password),
@@ -295,7 +318,7 @@ def list_classes(
     result = []
     for c in classes:
         student_count = db.query(func.count(Student.student_id)).filter(Student.class_id == c.class_id).scalar()
-        teacher_count = db.query(func.count(Teacher.teacher_id)).filter(Teacher.class_id == c.class_id).scalar()
+        teacher_count = db.query(func.count(TeacherClass.teacher_id)).filter(TeacherClass.class_id == c.class_id).scalar()
         result.append({
             "class_id": c.class_id,
             "class_name": c.class_name,
@@ -356,7 +379,7 @@ def delete_class(
     if not cls:
         raise HTTPException(404, detail="班级不存在")
     student_count = db.query(func.count(Student.student_id)).filter(Student.class_id == class_id).scalar()
-    teacher_count = db.query(func.count(Teacher.teacher_id)).filter(Teacher.class_id == class_id).scalar()
+    teacher_count = db.query(func.count(TeacherClass.teacher_id)).filter(TeacherClass.class_id == class_id).scalar()
     if student_count > 0 or teacher_count > 0:
         raise HTTPException(400, detail=f"该班级仍有 {student_count} 名学生和 {teacher_count} 名教师，无法删除")
     db.delete(cls)
